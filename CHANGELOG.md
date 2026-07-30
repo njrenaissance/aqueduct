@@ -4,6 +4,17 @@ All notable changes to the templates in this repository are documented here, per
 
 ## basic
 
+### [1.6.0] - 2026-07-29
+
+#### Added
+
+- Two new sections in the scaffolded `feature_request` issue template
+  (`.github/ISSUE_TEMPLATE/feature_request.md`): **Acceptance criteria** (with a
+  starter `- [ ]` checkbox) and **Out of scope**. This lets the Software Factory
+  decomposition/plan workflow read acceptance criteria straight from each issue
+  instead of bolting one on ad hoc. `bug_report.md` and the front matter
+  (`feat:` title prefix, `enhancement` label) are unchanged.
+
 ### [1.5.0] - 2026-07-29
 
 #### Added

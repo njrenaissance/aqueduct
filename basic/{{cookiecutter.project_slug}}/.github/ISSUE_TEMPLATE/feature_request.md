@@ -7,4 +7,12 @@ labels: enhancement
 
 ## What do you want to add
 
+
 ## Why
+
+
+## Acceptance criteria
+
+- [ ]
+
+## Out of scope
