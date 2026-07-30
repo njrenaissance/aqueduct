@@ -4,6 +4,19 @@ All notable changes to the templates in this repository are documented here, per
 
 ## basic
 
+### [1.5.0] - 2026-07-29
+
+#### Added
+
+- `.claude/standards/decisions.md`, a new unconditional standard that defines
+  *when* an architecture decision earns an ADR (significant or hard-to-reverse
+  choices — storage/framework, module boundaries, subsystem-wide dependencies —
+  judged on reversibility and blast radius, not size) and points at the `adr`
+  skill for the mechanics. The standard carries only the trigger policy; the
+  skill (assumed available in the environment) owns the format, numbering, and
+  file location, with a `docs/adr/NNNN-*.md` Markdown fallback if the skill is
+  absent. Imported into `CLAUDE.md` for every project.
+
 ### [1.4.0] - 2026-07-12
 
 #### Added

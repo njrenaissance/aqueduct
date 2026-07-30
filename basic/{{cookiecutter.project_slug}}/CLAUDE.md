@@ -14,6 +14,7 @@ Cross-cutting concerns enabled for this project:
 ## Imports
 
 - @.claude/standards/git-workflow.md
+- @.claude/standards/decisions.md
 - @.claude/standards/wiki.md
 - @.claude/standards/testing.md
 - @.claude/standards/error-handling.md
