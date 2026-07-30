@@ -21,6 +21,20 @@ This project uses `uv` for package management, linting, and formatting.
 uv sync
 ```
 
+## Git hooks
+
+Local quality gates run through the [`pre-commit`](https://pre-commit.com/)
+framework (config in `.pre-commit-config.yaml`): `git commit` runs `ruff` and
+`mypy`{{ " and `bandit`" if cookiecutter.security == "yes" else "" }}, and
+`git push` runs `pytest`. The hooks are installed automatically when the project
+is generated. If they weren't (e.g. Git wasn't available at generation time),
+install them once:
+
+```bash
+uv run pre-commit install
+uv run pre-commit install --hook-type pre-push
+```
+
 ## Wiki
 
 This project keeps an `openwiki/` folder of generated codebase documentation

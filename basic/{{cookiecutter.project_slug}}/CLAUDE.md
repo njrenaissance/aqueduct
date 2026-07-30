@@ -49,7 +49,19 @@ uv run pytest              # test
 uv run ruff check .        # lint
 uv run ruff format .       # format
 uv run mypy src            # type-check
+uv run pre-commit run --all-files  # run all Git hooks manually
 ```
+
+## Git hooks
+
+Local quality gates are installed automatically when the project is generated
+(via `.pre-commit-config.yaml` + the [`pre-commit`](https://pre-commit.com/)
+framework). `git commit` runs `ruff format --check`, `ruff check`, and
+`mypy src`{{ " (plus `bandit -r src`)" if cookiecutter.security == "yes" else "" }};
+`git push` runs `pytest`. A failing hook is the same signal `ci.yml` would give,
+just earlier. If the hooks were not installed (e.g. Git wasn't available at
+generation time), install them with
+`uv run pre-commit install && uv run pre-commit install --hook-type pre-push`.
 
 ## Conventions
 
@@ -65,4 +77,4 @@ Don't force a pattern where a plain function or class is simpler — use these t
 
 Python- and test-specific conventions live in `.claude/rules/` (`python-lang.md`, `pytest-rules.md`) and load automatically when Claude touches matching files.
 
-Run `uv run pytest`, `uv run ruff check .`, and `uv run mypy src` before considering a change done.
+Run `uv run pytest`, `uv run ruff check .`, and `uv run mypy src` before considering a change done — the installed Git hooks (see **Git hooks** above) enforce the same checks at commit/push time, so don't bypass them with `--no-verify`.

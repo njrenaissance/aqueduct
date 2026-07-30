@@ -24,6 +24,7 @@ dev = [
     "pytest-mock>=3.14.0",
     "ruff>=0.9.0",
     "mypy>=1.13.0",
+    "pre-commit>=4.0.0",
 {%- if cookiecutter.security == "yes" %}
     "bandit>=1.7.0",
 {%- endif %}

@@ -4,6 +4,30 @@ All notable changes to the templates in this repository are documented here, per
 
 ## basic
 
+### [1.8.0] - 2026-07-29
+
+#### Added
+
+- `.pre-commit-config.yaml` and a `hooks/post_gen_project.py` post-generation
+  hook that bake local Git hooks into every generated project via the
+  [`pre-commit`](https://pre-commit.com/) framework. The `pre-commit` stage
+  runs `ruff format --check`, `ruff check`, `mypy src`, and — when
+  `security == "yes"` — `bandit -r src`; the `pre-push` stage runs `pytest`.
+  This mirrors the checks in `ci.yml` (`format-lint.yml`, `type-check.yml`,
+  `unit-tests.yml`) so failures surface at commit/push time instead of only
+  in CI. Hooks are `repo: local` and call `uv run`, so their versions track
+  the pinned dev-dependency versions (single source of truth) rather than a
+  second, drifting toolchain.
+- `post_gen_project.py` runs `git init` (if the target isn't already a repo)
+  and installs both hook types at generation time, degrading gracefully —
+  printing manual `uv run pre-commit install` instructions and exiting 0 —
+  if `git`/`pre-commit` isn't available on the generating machine.
+- `pre-commit` added to the `dev` dependency group in `pyproject.toml`;
+  `uv run pre-commit`, `uv run bandit`, and `git commit`/`git push` added to
+  the `.claude/settings.json` allowlist (the last two so the hook-gated commit
+  workflow doesn't prompt). `security.md` reconciled so its "run `bandit` in
+  pre-commit" guidance now reflects the real, installed hook.
+
 ### [1.7.0] - 2026-07-29
 
 #### Added

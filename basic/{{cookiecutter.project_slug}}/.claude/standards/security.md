@@ -7,11 +7,12 @@
 - `.env.example` documents every required variable with a placeholder value.
   Never put a real secret in `.env.example`, a test fixture, or a code
   comment, even for a "just for local testing" convenience.
-- Run `bandit` in CI/pre-commit (`uv run bandit -r src`) to catch common
-  vulnerability patterns automatically — hardcoded passwords, `eval`/`exec`
-  on untrusted input, insecure hashing (e.g. MD5/SHA1 for passwords), and
-  similar. Treat a `bandit` finding as a bug to fix, not a false positive to
-  suppress by default.
+- `bandit` runs automatically as a pre-commit hook (`uv run bandit -r src`,
+  wired through `.pre-commit-config.yaml`) to catch common vulnerability
+  patterns — hardcoded passwords, `eval`/`exec` on untrusted input, insecure
+  hashing (e.g. MD5/SHA1 for passwords), and similar. Run it by hand the same
+  way when you want a check outside a commit. Treat a `bandit` finding as a bug
+  to fix, not a false positive to suppress by default.
 - Dependency hygiene is handled by `dependabot.yml`, which keeps pinned
   versions current automatically. Don't pin a dependency backward to dodge a
   Dependabot bump without first investigating why the bump broke something —
