@@ -18,6 +18,7 @@ Cross-cutting concerns enabled for this project:
 - @.claude/standards/wiki.md
 - @.claude/standards/testing.md
 - @.claude/standards/error-handling.md
+- @.claude/standards/database.md
 {%- if cookiecutter.app_config == "yes" %}
 - @.claude/standards/configuration.md
 {%- endif %}

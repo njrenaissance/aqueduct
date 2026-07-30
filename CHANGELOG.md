@@ -4,6 +4,22 @@ All notable changes to the templates in this repository are documented here, per
 
 ## basic
 
+### [1.7.0] - 2026-07-29
+
+#### Added
+
+- `.claude/standards/database.md`, a new unconditional standard establishing the
+  house database policy: schema changes go through checked-in, versioned
+  **migrations** (never an ad-hoc hand-run `ALTER`), and those migrations are
+  **forward-only** — no down/downgrade migrations; a bad migration is undone by
+  writing a *new* forward migration that corrects it. The rationale is
+  production discipline: a live schema is never downgraded, so dev and CI
+  exercise the same one-way path prod does. The standard also names a preferred
+  (but not exclusive) stack — **PostgreSQL + SQLAlchemy + Alembic** — with
+  Alembic-specific guidance to leave `downgrade()` a no-op. Imported into
+  `CLAUDE.md` for every project (there is no cookiecutter database toggle; the
+  guidance is harmless on projects without a database).
+
 ### [1.6.0] - 2026-07-29
 
 #### Added
