@@ -1,20 +1,17 @@
 """Cookiecutter post-generation hook.
 
-Initialize a Git repo (if the target isn't already one). Best-effort: never
-aborts generation if Git is unavailable.
-
-The pre-commit / pre-push hooks are deliberately NOT installed here. cruft (the
-template-sync mechanism, see the project's README / CLAUDE.md) re-runs this hook
-inside its own internal renders when computing an update; `pre-commit install`
-would bake machine-specific absolute paths into `.git/hooks/` and `uv run` would
-create a `.venv/`, and cruft would then try to diff/patch both — silently
-dropping real template changes. Keeping this hook to a bare, deterministic
-`git init` keeps `cruft update` correct. Installing the local quality-gate hooks
-is therefore a one-time manual step the developer runs after generation.
+Deliberately has NO filesystem side effects — it only prints the one-time manual
+step for installing the local Git hooks. cruft (the template-sync mechanism, see
+the project's README / CLAUDE.md) re-runs this hook inside its own internal
+renders when computing an update, so anything this hook writes to the tree
+(`git init` → a `.git/`; `pre-commit install` → machine-specific paths in
+`.git/hooks/`; `uv run`/`uv sync` → a `.venv/`) becomes state cruft has to
+diff and patch — and `git apply` refuses paths under `.git/`, which makes
+`cruft update` silently drop real template changes. Keeping this hook to a pure
+print keeps `cruft update` correct. The target is assumed to already be a Git
+repository; installing the quality-gate hooks is a one-time manual step.
 """
-import subprocess
 import sys
-from pathlib import Path
 
 INSTALL_MESSAGE = (
     "\n[hooks] Project generated. Install the local quality-gate hooks once,\n"
@@ -24,16 +21,7 @@ INSTALL_MESSAGE = (
 )
 
 
-def _run(cmd: list[str]) -> None:
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
-
-
 def main() -> int:
-    try:
-        if not Path(".git").is_dir():
-            _run(["git", "init"])
-    except (OSError, subprocess.CalledProcessError):
-        pass  # git unavailable; the project still generated fine
     print(INSTALL_MESSAGE)
     return 0
 

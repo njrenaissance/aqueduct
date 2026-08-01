@@ -56,7 +56,7 @@ uvx cruft check            # is this project behind its template?
 ## Git hooks
 
 Local quality gates run through the [`pre-commit`](https://pre-commit.com/)
-framework (config in `.pre-commit-config.yaml`). Generation only runs `git init`;
+framework (config in `.pre-commit-config.yaml`). Generation installs nothing;
 install the hooks once, from inside the project:
 
 ```bash

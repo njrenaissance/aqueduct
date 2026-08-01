@@ -26,8 +26,8 @@ uv sync
 Local quality gates run through the [`pre-commit`](https://pre-commit.com/)
 framework (config in `.pre-commit-config.yaml`): `git commit` runs `ruff` and
 `mypy`{{ " and `bandit`" if cookiecutter.security == "yes" else "" }}, and
-`git push` runs `pytest`. Generation only runs `git init` — install the hooks
-once, from inside the project:
+`git push` runs `pytest`. Generation installs nothing — install the hooks once,
+from inside the project:
 
 ```bash
 uv run pre-commit install

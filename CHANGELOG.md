@@ -40,15 +40,17 @@ All notable changes to the templates in this repository are documented here, per
 
 #### Changed
 
-- `hooks/post_gen_project.py` no longer auto-installs the pre-commit/pre-push Git
-  hooks at generation — it now only runs `git init` and prints the one-time manual
-  install commands. This is required for cruft: cruft re-runs the post-generation
-  hook inside its own internal renders when computing an update, and
-  `uv run pre-commit install` there bakes machine-specific absolute paths into
-  `.git/hooks/` and creates a `.venv/` — which cruft then fails to patch, silently
-  dropping real template changes. A bare, deterministic `git init` keeps
-  `cruft update` correct. `README.md` and `CLAUDE.md` updated to describe the
-  one-time `uv run pre-commit install` step instead of promising auto-install.
+- `hooks/post_gen_project.py` no longer has any filesystem side effects — it now
+  only prints the one-time manual hook-install commands (previously it ran
+  `git init` and auto-installed the pre-commit/pre-push hooks). This is required
+  for cruft: cruft re-runs the post-generation hook inside its own internal renders
+  when computing an update, so anything the hook writes to the tree (`git init` → a
+  `.git/`; `uv run pre-commit install` → machine-specific paths in `.git/hooks/` and
+  a `.venv/`) becomes state cruft must reconcile, and `git apply` refuses paths
+  under `.git/` — which made cruft silently drop real template changes. The target
+  is assumed to already be a Git repository. `README.md` and `CLAUDE.md` updated to
+  describe the one-time `uv run pre-commit install` step instead of promising
+  auto-install.
 
 #### Removed
 
