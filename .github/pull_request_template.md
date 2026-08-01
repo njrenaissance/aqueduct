@@ -16,4 +16,5 @@ Closes #
 ## Checklist
 
 - [ ] Updated `CHANGELOG.md` if this changes a template's behavior
-- [ ] Bumped the affected template's `.cookiecutter-template-version` if this changes its behavior
+- [ ] Test-rendered the affected template, and (for cruft-tracked templates) confirmed `cruft create` still produces a valid `.cruft.json`
+- [ ] Will tag the release `<template>-v<semver>` on the merge commit (the authoritative version marker — see the bump ritual in `CLAUDE.md`)
