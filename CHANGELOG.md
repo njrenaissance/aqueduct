@@ -4,6 +4,35 @@ All notable changes to the templates in this repository are documented here, per
 
 ## basic
 
+### [1.9.0] - 2026-08-01
+
+#### Added
+
+- A self-detecting `integration-tests.yml` reusable workflow, wired into
+  `ci.yml` as an `Integration Tests` job that `needs: [unit-tests]` (so it only
+  runs once the unit gate is green — no point standing up Docker services behind
+  a red unit suite). The workflow can never go green without having run the
+  integration tests that exist, via three behaviours: no `integration`-marked
+  tests present → green, services never started; tests present but no
+  `docker-compose.yml`/`compose.yaml` → hard fail with a loud `::error::`, never
+  a silent skip; tests present with a compose file → `docker compose up -d
+  --wait`, run `pytest -m integration`, then always `docker compose down -v`.
+  Detection keys on pytest's collection exit code (5 = nothing collected →
+  nothing to run; a collection error is treated as "tests exist" so the real
+  run surfaces it). No compose file or example integration test is shipped — the
+  workflow is the enforcement mechanism; a project provisions its own services
+  when it adds integration tests.
+
+#### Changed
+
+- `unit-tests.yml` now runs `pytest -m "not integration"` so integration tests
+  run only in the dedicated stage (with their services) instead of double-running
+  unserviced in the unit stage; also fixed a `--cov=src\` line-continuation quirk
+  in that command (the missing space joined it to the next flag).
+- `github-actions.md` (Governance) now lists `Integration Tests` among the
+  required status-check names; `testing.md` documents the two-stage CI split and
+  the "adding an integration test requires committing a compose file" rule.
+
 ### [1.8.0] - 2026-07-29
 
 #### Added

@@ -28,5 +28,5 @@ paths:
 
 ## Governance
 
-- Branch protection's required status checks must reference the exact job `name:` values (e.g. `Lint & Format`, `Type Check`, `Unit Tests`) so `ci.yml` is actually enforced as a merge gate, not just advisory.
+- Branch protection's required status checks must reference the exact job `name:` values (e.g. `Lint & Format`, `Type Check`, `Unit Tests`, `Integration Tests`) so `ci.yml` is actually enforced as a merge gate, not just advisory.
 - Don't add a new top-level workflow when the logic belongs in an existing reusable one — extend `format-lint.yml`/`type-check.yml`/`unit-tests.yml` or add a new reusable workflow and call it from `ci.yml`, keeping the "callable building block" structure intact.

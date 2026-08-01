@@ -8,6 +8,16 @@
   ones. Reserve `integration` tests for the boundaries that genuinely can't
   be safely faked (a real database, a real network call, the filesystem) —
   everything else should be reachable with a unit test.
+- CI runs the two suites in separate stages (see `.github/workflows/`):
+  `unit-tests` runs `pytest -m "not integration"`, and a dedicated
+  `integration-tests` stage runs `pytest -m integration` after standing up its
+  backing services. That stage self-detects whether any `integration`-marked
+  tests exist — with none, it goes green without starting anything. But the
+  moment you add one, **CI expects a `docker-compose.yml` (or `compose.yaml`)
+  at the project root** to bring those services up, and the stage fails loudly
+  if it's missing rather than silently skipping. So adding an integration test
+  and committing the compose file that stands up its services are one change,
+  not two.
 - Use `pytest-mock`'s `mocker` fixture for mocking, not manual
   `unittest.mock.patch` decorators or context managers — it's less
   boilerplate and composes better with other fixtures.

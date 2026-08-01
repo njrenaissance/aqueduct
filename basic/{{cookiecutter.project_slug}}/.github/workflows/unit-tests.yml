@@ -28,8 +28,8 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          uv run pytest \
-            --cov=src\
+          uv run pytest -m "not integration" \
+            --cov=src \
             --cov-report=term-missing \
             --cov-report=json:coverage.json \
             -v
