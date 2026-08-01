@@ -4,6 +4,59 @@ All notable changes to the templates in this repository are documented here, per
 
 ## basic
 
+### [1.10.0] - 2026-08-01
+
+#### Added
+
+- Adopted [`cruft`](https://cruft.github.io/cruft/) as the template→project sync
+  mechanism. Generating with `cruft create … --directory basic` (now the
+  recommended path, documented in the root `CLAUDE.md`) writes a `.cruft.json` into
+  the project recording the template URL, the exact template commit, and the
+  answered context — so a project can later pull in template improvements via a
+  3-way merge instead of going stale.
+- `template-sync.yml`, an **on-demand** reusable workflow (`workflow_dispatch` +
+  `workflow_call`, deliberately *not* in the `ci.yml` gate chain and *not*
+  scheduled) that runs `uvx cruft check` and reports whether the project is behind
+  its template. Missing `.cruft.json` (a pre-cruft project) → green with a retrofit
+  notice, never a hard fail. Documented as intentionally-advisory in
+  `.claude/rules/github-actions.md` (Governance) so it is never added to branch
+  protection.
+- Two agent skills: `.claude/skills/update-from-template/` (check → `cruft update`
+  → resolve `.rej` → run the full gate → summarize the `CHANGELOG.md` delta) and
+  `.claude/skills/link-to-template/` (retrofit a project that predates cruft by
+  deriving its baseline tag, running `cruft link`, then handing off to
+  `update-from-template`). `link-to-template` is also kept at the source-repo root
+  so it can be run against external pre-cruft projects; the two copies are
+  byte-identical. Both skills manage a `.cruft.json` `skip` list
+  (`.git`/`.venv`/`uv.lock`) so cruft never diffs or patches generated artifacts —
+  essential when retrofitting a project whose baseline predates the slimmed hook.
+  `README.md` and `CLAUDE.md` gained a template-sync section, and
+  `Bash(uvx cruft *)`/`Bash(cruft *)` were added to the `.claude/settings.json`
+  allowlist.
+- The template repo is now tagged per version (`basic-v<semver>`), with all
+  historical versions (`basic-v1.0.0` … `basic-v1.9.0`) backfilled. Tagging is
+  folded into the release/bump ritual in the root `CLAUDE.md`; the pushed tag is
+  the authoritative version marker and the ref the retrofit path pins to.
+
+#### Changed
+
+- `hooks/post_gen_project.py` no longer auto-installs the pre-commit/pre-push Git
+  hooks at generation — it now only runs `git init` and prints the one-time manual
+  install commands. This is required for cruft: cruft re-runs the post-generation
+  hook inside its own internal renders when computing an update, and
+  `uv run pre-commit install` there bakes machine-specific absolute paths into
+  `.git/hooks/` and creates a `.venv/` — which cruft then fails to patch, silently
+  dropping real template changes. A bare, deterministic `git init` keeps
+  `cruft update` correct. `README.md` and `CLAUDE.md` updated to describe the
+  one-time `uv run pre-commit install` step instead of promising auto-install.
+
+#### Removed
+
+- `.cookiecutter-template-version` — retired in favour of `.cruft.json` (authoritative
+  for a generated project's lineage) plus the `basic-v*` git tags (the template's own
+  version record). New projects no longer carry the file; the `link-to-template` skill
+  removes it from a pre-cruft project as part of retrofitting `.cruft.json`.
+
 ### [1.9.0] - 2026-08-01
 
 #### Added

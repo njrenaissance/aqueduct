@@ -26,14 +26,36 @@ uv sync
 Local quality gates run through the [`pre-commit`](https://pre-commit.com/)
 framework (config in `.pre-commit-config.yaml`): `git commit` runs `ruff` and
 `mypy`{{ " and `bandit`" if cookiecutter.security == "yes" else "" }}, and
-`git push` runs `pytest`. The hooks are installed automatically when the project
-is generated. If they weren't (e.g. Git wasn't available at generation time),
-install them once:
+`git push` runs `pytest`. Generation only runs `git init` — install the hooks
+once, from inside the project:
 
 ```bash
 uv run pre-commit install
 uv run pre-commit install --hook-type pre-push
 ```
+
+(They are not auto-installed at generation because `pre-commit install` bakes
+machine-specific paths into `.git/hooks/`, which would break `cruft update` — see
+**Staying in sync with the template** below.)
+
+## Staying in sync with the template
+
+This project was generated from the `basic` cookiecutter template and linked to it
+with [`cruft`](https://cruft.github.io/cruft/). The link lives in `.cruft.json`
+(template URL, the exact template commit, and the answers given at generation) — it
+is what lets template improvements be pulled in later instead of the scaffold going
+stale. Check whether the template has moved ahead:
+
+```bash
+uvx cruft check    # exit 0 = up to date; non-zero = behind
+```
+
+The **Template Sync** GitHub Actions workflow runs this check on demand (Actions tab
+→ *Template Sync* → *Run workflow*); it is intentionally not part of the PR gate and
+never blocks a merge. When the project is behind, run the `update-from-template`
+skill (or `uvx cruft update` by hand) to apply the delta, resolve any `*.rej`
+conflicts, and re-run the checks. See `.claude/standards/` and
+`.claude/skills/update-from-template/` for the agent-run procedure.
 
 ## Wiki
 

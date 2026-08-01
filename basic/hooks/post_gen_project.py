@@ -1,16 +1,24 @@
 """Cookiecutter post-generation hook.
 
-Initialize a Git repo (if needed) and install the pre-commit + pre-push hooks
-so quality gates run locally. Best-effort: never aborts generation if Git or
-pre-commit is unavailable — prints manual instructions and exits 0 instead.
+Initialize a Git repo (if the target isn't already one). Best-effort: never
+aborts generation if Git is unavailable.
+
+The pre-commit / pre-push hooks are deliberately NOT installed here. cruft (the
+template-sync mechanism, see the project's README / CLAUDE.md) re-runs this hook
+inside its own internal renders when computing an update; `pre-commit install`
+would bake machine-specific absolute paths into `.git/hooks/` and `uv run` would
+create a `.venv/`, and cruft would then try to diff/patch both — silently
+dropping real template changes. Keeping this hook to a bare, deterministic
+`git init` keeps `cruft update` correct. Installing the local quality-gate hooks
+is therefore a one-time manual step the developer runs after generation.
 """
 import subprocess
 import sys
 from pathlib import Path
 
-MANUAL_MESSAGE = (
-    "\n[hooks] Could not install Git hooks automatically.\n"
-    "        From inside the generated project, run:\n"
+INSTALL_MESSAGE = (
+    "\n[hooks] Project generated. Install the local quality-gate hooks once,\n"
+    "        from inside the project:\n"
     "          uv run pre-commit install\n"
     "          uv run pre-commit install --hook-type pre-push\n"
 )
@@ -24,12 +32,10 @@ def main() -> int:
     try:
         if not Path(".git").is_dir():
             _run(["git", "init"])
-        _run(["uv", "run", "pre-commit", "install"])
-        _run(["uv", "run", "pre-commit", "install", "--hook-type", "pre-push"])
-        print("[hooks] Installed pre-commit + pre-push Git hooks.")
     except (OSError, subprocess.CalledProcessError):
-        print(MANUAL_MESSAGE)
-    return 0  # hook installation is best-effort; never fail generation
+        pass  # git unavailable; the project still generated fine
+    print(INSTALL_MESSAGE)
+    return 0
 
 
 if __name__ == "__main__":

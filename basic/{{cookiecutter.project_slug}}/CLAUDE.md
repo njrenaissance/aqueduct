@@ -50,18 +50,39 @@ uv run ruff check .        # lint
 uv run ruff format .       # format
 uv run mypy src            # type-check
 uv run pre-commit run --all-files  # run all Git hooks manually
+uvx cruft check            # is this project behind its template?
 ```
 
 ## Git hooks
 
-Local quality gates are installed automatically when the project is generated
-(via `.pre-commit-config.yaml` + the [`pre-commit`](https://pre-commit.com/)
-framework). `git commit` runs `ruff format --check`, `ruff check`, and
+Local quality gates run through the [`pre-commit`](https://pre-commit.com/)
+framework (config in `.pre-commit-config.yaml`). Generation only runs `git init`;
+install the hooks once, from inside the project:
+
+```bash
+uv run pre-commit install
+uv run pre-commit install --hook-type pre-push
+```
+
+Then `git commit` runs `ruff format --check`, `ruff check`, and
 `mypy src`{{ " (plus `bandit -r src`)" if cookiecutter.security == "yes" else "" }};
 `git push` runs `pytest`. A failing hook is the same signal `ci.yml` would give,
-just earlier. If the hooks were not installed (e.g. Git wasn't available at
-generation time), install them with
-`uv run pre-commit install && uv run pre-commit install --hook-type pre-push`.
+just earlier. (The hooks are not auto-installed at generation on purpose —
+`pre-commit install` bakes machine-specific paths into `.git/hooks/` that would
+break `cruft update`; see **Template sync**.)
+
+## Template sync
+
+This project is linked to the cookiecutter template it was generated from via
+`.cruft.json` (the template URL, the exact template commit, and the answers given
+at generation). `.cruft.json` is the authoritative record of template lineage —
+there is no separate version file. `uvx cruft check` reports whether the template
+has moved ahead; the on-demand `Template Sync` workflow
+(`.github/workflows/template-sync.yml`) runs the same check in CI when you trigger
+it. To pull template changes in, use the **`update-from-template`** skill
+(`.claude/skills/update-from-template/`), which runs `cruft update`, resolves any
+conflicts, and re-runs the gate above. A project that somehow lost its `.cruft.json`
+can re-establish the link with the **`link-to-template`** skill.
 
 ## Conventions
 

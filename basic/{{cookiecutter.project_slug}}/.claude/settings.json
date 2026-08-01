@@ -33,6 +33,8 @@
       "Bash(uv run pre-commit)",
       "Bash(uv run pre-commit *)",
       "Bash(uv run bandit *)",
+      "Bash(uvx cruft *)",
+      "Bash(cruft *)",
       "Bash(openwiki)",
       "Bash(openwiki *)",
       "Bash(npm install -g openwiki)"
