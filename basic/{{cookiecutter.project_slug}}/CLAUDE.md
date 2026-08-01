@@ -43,6 +43,7 @@ Cross-cutting concerns enabled for this project:
 ## Commands
 
 ```bash
+make setup                 # one-time: install deps + local Git hooks
 uv sync                    # install dependencies
 uv run python src/main.py  # run
 uv run pytest              # test
@@ -56,8 +57,9 @@ uvx cruft check            # is this project behind its template?
 ## Git hooks
 
 Local quality gates run through the [`pre-commit`](https://pre-commit.com/)
-framework (config in `.pre-commit-config.yaml`). Generation installs nothing;
-install the hooks once, from inside the project:
+framework (config in `.pre-commit-config.yaml`). `make setup` installs them (Git
+can't auto-install hooks on clone, so this is a one-time step); or run them
+directly:
 
 ```bash
 uv run pre-commit install
@@ -67,9 +69,8 @@ uv run pre-commit install --hook-type pre-push
 Then `git commit` runs `ruff format --check`, `ruff check`, and
 `mypy src`{{ " (plus `bandit -r src`)" if cookiecutter.security == "yes" else "" }};
 `git push` runs `pytest`. A failing hook is the same signal `ci.yml` would give,
-just earlier. (The hooks are not auto-installed at generation on purpose —
-`pre-commit install` bakes machine-specific paths into `.git/hooks/` that would
-break `cruft update`; see **Template sync**.)
+just earlier — and `ci.yml` runs the same checks regardless, so it stays the real
+gate even if the local hooks aren't installed.
 
 ## Template sync
 

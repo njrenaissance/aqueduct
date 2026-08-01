@@ -35,6 +35,8 @@
       "Bash(uv run bandit *)",
       "Bash(uvx cruft *)",
       "Bash(cruft *)",
+      "Bash(make)",
+      "Bash(make *)",
       "Bash(openwiki)",
       "Bash(openwiki *)",
       "Bash(npm install -g openwiki)"

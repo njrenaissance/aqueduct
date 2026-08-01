@@ -15,28 +15,24 @@ A minimal Python project, managed with [uv](https://docs.astral.sh/uv/).
 
 ## Setup
 
-This project uses `uv` for package management, linting, and formatting.
+This project uses `uv` for package management, linting, and formatting. After
+cloning, run setup once — it installs dependencies and the local Git hooks:
 
 ```bash
-uv sync
+make setup
 ```
+
+(Equivalent to `uv sync && uv run pre-commit install && uv run pre-commit install --hook-type pre-push`.)
 
 ## Git hooks
 
 Local quality gates run through the [`pre-commit`](https://pre-commit.com/)
 framework (config in `.pre-commit-config.yaml`): `git commit` runs `ruff` and
 `mypy`{{ " and `bandit`" if cookiecutter.security == "yes" else "" }}, and
-`git push` runs `pytest`. Generation installs nothing — install the hooks once,
-from inside the project:
-
-```bash
-uv run pre-commit install
-uv run pre-commit install --hook-type pre-push
-```
-
-(They are not auto-installed at generation because `pre-commit install` bakes
-machine-specific paths into `.git/hooks/`, which would break `cruft update` — see
-**Staying in sync with the template** below.)
+`git push` runs `pytest`. `make setup` (above) installs them. Git can't
+auto-install hooks on clone, so this one-time step is how they get wired up — but
+CI (`.github/workflows/ci.yml`) runs the same checks regardless, so it stays the
+real gate even when the local hooks aren't installed.
 
 ## Staying in sync with the template
 
