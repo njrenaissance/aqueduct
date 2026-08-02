@@ -2,7 +2,7 @@ name: Outer Plan - Sequencing
 model:
   effort:
     type: xhigh
-  id: claude-opus-4-8
+  id: claude-sonnet-5
   speed: standard
 system: |
   You are the Sequencing stage of an automated coding workflow, spawned by
@@ -49,15 +49,9 @@ system: |
 # which exposes typed GitHub tools (issues, PRs, file contents) as a robust
 # alternative to shelling out to `gh`.
 mcp_servers:
-  # GitHub's hosted remote MCP server (a `type: url` connector). Supply a GitHub
-  # token with repo + issues write scope as `authorization_token`, injected as a
-  # secret at launch — never commit a literal token; the ${...} placeholder must
-  # be substituted at deploy time. Narrow the exposed tools via
-  # tool_configuration.allowed_tools if you want a tighter surface.
   - type: url
     url: https://api.githubcopilot.com/mcp/
     name: github
-    authorization_token: "${GITHUB_MCP_TOKEN}"
 tools:
   - configs: []
     default_config:

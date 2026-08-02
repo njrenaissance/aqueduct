@@ -2,7 +2,7 @@ name: Inner Plan
 model:
   effort:
     type: high
-  id: claude-opus-4-8
+  id: claude-sonnet-5
   speed: standard
 system: |
   You are the Plan stage of an automated coding workflow (the "Planner"),
@@ -68,15 +68,9 @@ system: |
 # local command execution, since step 3 runs the test suite to validate the
 # tests are genuinely red.
 mcp_servers:
-  # GitHub's hosted remote MCP server (a `type: url` connector). Supply a GitHub
-  # token with repo + issues write scope as `authorization_token`, injected as a
-  # secret at launch — never commit a literal token; the ${...} placeholder must
-  # be substituted at deploy time. Narrow the exposed tools via
-  # tool_configuration.allowed_tools if you want a tighter surface.
   - type: url
     url: https://api.githubcopilot.com/mcp/
     name: github
-    authorization_token: "${GITHUB_MCP_TOKEN}"
 tools:
   - configs: []
     default_config:

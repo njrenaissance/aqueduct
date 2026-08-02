@@ -1,11 +1,12 @@
 # Managed agents — operational reference
 
-Definitions for the automated stages that run as Claude **Managed Agents**,
-all spawned by the **Scrum Master** orchestrator (itself a Managed Agent,
-re-invoked per event — see `../coding-workflow.md`): `outer-sequencing.yml`,
-`inner-plan.yml` (the Planner), and `inner-build.yml`. Sequencing and Build are
-*awaited* subagents whose structured result the Scrum Master judges; the Planner
-is launched *fire-and-forget* (it waits on the human's async `/approve`).
+Definitions for the automated stages that run as Claude **Managed Agents**. The
+**Scrum Master** orchestrator (`scrum-master.yml`) is itself a Managed Agent,
+re-invoked per event (see `../coding-workflow.md`), and spawns the other three:
+`outer-sequencing.yml`, `inner-plan.yml` (the Planner), and `inner-build.yml`.
+Sequencing and Build are *awaited* subagents whose structured result the Scrum
+Master judges; the Planner is launched *fire-and-forget* (it waits on the
+human's async `/approve`).
 
 The interactive HITL stages — Scaffold, Spec Planning, Inner Review — run as
 Claude Code sessions. Inner Plan is split: the Planner here drafts it, and the

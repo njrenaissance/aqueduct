@@ -241,7 +241,7 @@ Governing rules:
 - **Execute the committed plan; judge the exceptions.** The happy path follows `build-order.md` deterministically; the SM's reasoning is spent on *outcomes* — an escalated Build, a surfaced coupling, a filed defect — deciding proceed / escalate / re-sequence. A found problem is just a problem.
 - **Single-flight, coalescing.** A burst of parallel-group merges collapses to one reconcile against latest `main` (Actions concurrency group, cancel-in-progress).
 
-**Model:** Reasoning-class — the value is judgment over subagents' structured results, not dispatch.
+**Model:** Sonnet 5 (reasoning-class, cost-conscious) — the value is judgment over subagents' structured results, not dispatch; each wake is short (read state → one action → exit). Pinned in `managed-agents/scrum-master.yml`.
 **Exit condition (per invocation):** the single next action taken (or a deliberate no-op), and the orchestrator exited. The phase completes when all planned issues are merged and Deliver is green-gated.
 
 ---
