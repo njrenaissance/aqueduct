@@ -4,6 +4,38 @@ All notable changes to the templates in this repository are documented here, per
 
 ## basic
 
+### [1.11.0] - 2026-08-01
+
+#### Added
+
+- A `coding_factory` (`no`/`yes`, default `no`) cookiecutter prompt that gates
+  two thin **Scrum Master launcher** GitHub Actions. When `yes`, the template
+  renders `.github/workflows/scrum-master.yml` and `.github/workflows/approve.yml`;
+  when `no`, neither file is created. Gating uses the empty-filename technique
+  (each source file is named `{% if cookiecutter.coding_factory == 'yes' %}<name>.yml{% endif %}`,
+  which cookiecutter/cruft skip when the name renders empty) — deliberately **not**
+  a post-generation hook, which the template no longer has (see 1.10.0) and which
+  would break `cruft update`.
+- The two launchers implement the coding-factory design (`_workflow/`): each does
+  no build work — it only launches the resumable **Scrum Master** orchestrator (a
+  Claude Managed Agent) and exits. `scrum-master.yml` fires on every push to `main`
+  (single-flight via a `scrum-master` concurrency group with `cancel-in-progress`;
+  also `workflow_dispatch` for a manual re-reconcile); `approve.yml` fires on an
+  `issue_comment` guarded to a top-level `/approve` PR comment from an authorized
+  commenter (`OWNER`/`MEMBER`/`COLLABORATOR`) and launches the Scrum Master (which
+  spawns Build) — it never merges. Both follow the repo's Actions conventions:
+  least-privilege `permissions: contents: read`, `timeout-minutes`, secrets and
+  event context passed via `env:` (never interpolated into `run:`), and every
+  `${{ ... }}` expression `{% raw %}`-wrapped for the Jinja render. The actual
+  managed-agents API launch call is stubbed (a loud `::error::` until wired), to be
+  finalized once the API surface is pinned.
+- Required-secrets documentation (`ANTHROPIC_API_KEY`, `GITHUB_MCP_TOKEN`) in a
+  conditional `README.md` section, a `coding_factory` line in `CLAUDE.md`'s
+  `## Profile`, and a Governance note in `.claude/rules/github-actions.md` marking
+  both launchers as event launchers that must never be wired into `ci.yml` or added
+  to branch protection (same posture as `template-sync.yml`). All three render only
+  under `coding_factory=yes`.
+
 ### [1.10.0] - 2026-08-01
 
 #### Added

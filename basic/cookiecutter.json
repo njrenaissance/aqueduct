@@ -11,5 +11,6 @@
   "app_config": ["no", "yes"],
   "structured_logging": ["no", "yes"],
   "telemetry": ["no", "yes"],
-  "security": ["no", "yes"]
+  "security": ["no", "yes"],
+  "coding_factory": ["no", "yes"]
 }

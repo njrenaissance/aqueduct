@@ -10,6 +10,7 @@ Cross-cutting concerns enabled for this project:
 - Structured logging (`structlog`): {{ "enabled" if cookiecutter.structured_logging == "yes" else "disabled" }}
 - Telemetry (OpenTelemetry): {{ "enabled" if cookiecutter.telemetry == "yes" else "disabled" }}
 - Security scanning (`bandit`): {{ "enabled" if cookiecutter.security == "yes" else "disabled" }}
+- Coding-factory launchers (Scrum Master): {{ "enabled" if cookiecutter.coding_factory == "yes" else "disabled" }}
 
 ## Imports
 

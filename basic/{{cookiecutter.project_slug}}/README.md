@@ -53,6 +53,38 @@ skill (or `uvx cruft update` by hand) to apply the delta, resolve any `*.rej`
 conflicts, and re-run the checks. See `.claude/standards/` and
 `.claude/skills/update-from-template/` for the agent-run procedure.
 
+{% if cookiecutter.coding_factory == "yes" -%}
+## Coding-factory launchers
+
+This project opted into the coding-factory workflow, so it carries two thin
+**Scrum Master launcher** GitHub Actions under `.github/workflows/`. Each does no
+build work — it launches the resumable **Scrum Master** orchestrator (a Claude
+Managed Agent) and exits. The Scrum Master is the sole thing that spawns and
+judges every subagent (Sequencing / Planner / Build).
+
+- **`scrum-master.yml`** — fires on every merge to `main` (single-flight;
+  `workflow_dispatch` also lets you re-reconcile by hand). The Scrum Master
+  reconciles from repo state: sequence an approved-but-unsequenced spec,
+  just-in-time launch the current ready group's Planners, advance groups, or
+  no-op.
+- **`approve.yml`** — fires when an authorized reviewer comments exactly
+  `/approve` on a plan's draft PR. It launches the Scrum Master (which records
+  the plan's approval and spawns Build); it never merges.
+
+**Required repository secrets** — set both under *Settings → Secrets and
+variables → Actions* before the launchers can run:
+
+| Secret | Purpose |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | Launches the Scrum Master managed agent via the Anthropic API. |
+| `GITHUB_MCP_TOKEN` | GitHub token with **repo + issues write** scope, consumed by the agents' GitHub remote MCP server to read/write issues and PRs. |
+
+The launchers ship with the managed-agents API call stubbed (a loud `::error::`
+until wired) — finalize the launch call in each workflow once the API surface is
+pinned. See the coding-factory docs (`_workflow/` in the template repo) for the
+Scrum Master's behaviour and kickoff messages.
+
+{% endif -%}
 ## Wiki
 
 This project keeps an `openwiki/` folder of generated codebase documentation

@@ -44,10 +44,13 @@ until it arrived — you never wait for a plan to be produced.
 ## What happens after `/approve` (automatic)
 
 - A launcher GitHub Action (`on: issue_comment`) verifies the commenter is
-  authorized and the body is `/approve`, writes `Status: approved` into the
-  plan file (the source of truth), and **starts Build** for the issue. Note this
-  fires only for **conversation** comments, which is why `/approve` must be a
-  top-level PR comment, not an inline review comment on a diff line.
+  authorized and the body is `/approve`, then **launches the Scrum Master** —
+  which records `Status: approved` in the plan file (the source of truth) and
+  spawns **Build** for the issue. (The Action does not write status or start
+  Build itself; the Scrum Master is the sole orchestrator that spawns and judges
+  every subagent — see [ADR-0008](../adr/0008-scrum-master-orchestrator.md).)
+  Note this fires only for **conversation** comments, which is why `/approve`
+  must be a top-level PR comment, not an inline review comment on a diff line.
 - Build implements, gets the tests green, runs a context-free code-review
   subagent over its own diff (one fix pass), and flips the **same PR** from
   draft to **ready for review**.

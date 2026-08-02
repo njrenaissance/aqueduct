@@ -56,6 +56,25 @@ Per-run context is not a field in these YAMLs — it arrives at session start:
 Kickoff templates. In production the **Scrum Master** sends these when it spawns
 each subagent; they are also how to launch one by hand for validation:
 
+The Scrum Master itself is launched by two thin GitHub Actions (see
+`scrum-master.yml`'s system prompt and `../coding-workflow.md` · Outer · Scrum
+Master), each attaching the repo at `main` and sending one of these kickoffs:
+
+- **Scrum Master — merge event** (`.github/workflows/scrum-master.yml`, on every
+  merge to `main`; also `workflow_dispatch`):
+  > Reconcile `<repo>` at `main`. If `spec/spec.md` is approved and
+  > `spec/build-order.md` is absent, spawn Sequencing (awaited), then launch the
+  > first ready group's Planners. Else advance groups: when a group's last issue
+  > is merged, launch the next group's Planners (JIT — the ready group only,
+  > never the backlog); when all issues are merged, mark Deliver-ready.
+  > Otherwise no-op. Do not use labels for control flow.
+- **Scrum Master — approve event** (`.github/workflows/approve.yml`, on an
+  authorized `/approve` PR comment):
+  > Plan approved on PR #\<N> in `<repo>`. Record `Status: approved` on that
+  > plan, spawn Build for its issue (awaited), then judge Build's structured
+  > result: proceed (Build flipped the draft PR to ready), escalate, or re-plan.
+  > Do not merge.
+
 - **Outer Sequencing** — attach repo at `main`:
   > Sequence the approved spec at `spec/spec.md`. Create the issues, analyze
   > dependencies, commit `spec/build-order.md`, and return a structured result.
