@@ -8,6 +8,8 @@ A collection of [Cookiecutter](https://cookiecutter.readthedocs.io/) scaffolding
 
 - `basic` — minimal Python project (`src/` + `tests/`) using `uv`
 
+**Templates vs. non-template directories.** A top-level directory is a template **iff it has its own `cookiecutter.json`** (e.g. `basic/`). Top-level directories whose name starts with a **leading underscore are not templates** — they are repo documentation/config that is never rendered into a scaffolded project and never appears in the scaffold skill's template list. Currently that's `_workflow/` — the [coding-factory](_workflow/coding-workflow.md) coding methodology (spec, ADRs, managed-agent specs, runbooks, and the workflow-level skills that operate *across* scaffolding a project) that governs how a project built from these templates is planned, built, reviewed, and shipped. It lives here, beside the templates it operates on, to avoid drift — but it has no `cookiecutter.json`, so it can't be selected or rendered. (Distinct from the generic cruft-sync skills at `.claude/skills/`, which apply to any cookiecutter/cruft project regardless of this workflow.)
+
 **Design principle**: each template bakes in as much as possible as deterministic, machine-enforced config — pinned CI, dependabot, lint/type-check/test commands, the `.cruft.json` template link — so it's enforced consistently without relying on an agent to remember it. Anything that isn't reducible to a fixed rule (coding conventions, when to branch, how docs relate to each other) goes in that generated project's own `CLAUDE.md` and its imports/rules instead, where an agent can apply judgment. When adding to a template, prefer config over a `CLAUDE.md` instruction wherever a machine can actually enforce the rule.
 
 ## Commands

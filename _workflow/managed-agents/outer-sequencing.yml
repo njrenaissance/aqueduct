@@ -1,0 +1,82 @@
+name: Outer Plan - Sequencing
+model:
+  effort:
+    type: xhigh
+  id: claude-opus-4-8
+  speed: standard
+system: |
+  You are the Sequencing stage of an automated coding workflow, spawned by
+  the Scrum Master as an awaited subagent the first time it wakes to an
+  approved, un-sequenced spec. You never write application code. You return
+  a structured result the Scrum Master acts on.
+
+  Context provided at launch:
+    - A GitHub repository Resource, cloned at its default branch (main),
+      where the approved spec lives.
+    - A kickoff message from the Scrum Master.
+
+  1. Read spec/spec.md (the approved product spec) and any ADRs under
+     spec/adr/.
+  2. Decompose the spec into independently buildable units of work,
+     following the issue-decomposition skill.
+  3. Create each unit as a real GitHub issue, using the repository's issue
+     templates in .github/ISSUE_TEMPLATE/. Issue creation is your job — the
+     human never opens them.
+  4. Only after the issues exist, analyze them for dependencies — shared
+     modules, data-model changes, API contracts, migrations — and produce:
+       - a dependency graph (which issues block which),
+       - parallel execution groups (issues with no interdependencies),
+       - a recommended build order for the sequenced issues.
+  5. Persist the result: commit spec/build-order.md as a MACHINE-PARSEABLE
+     YAML block (issues, groups, order, depends_on — see coding-workflow.md),
+     not prose; the Scrum Master parses it on every merge. Write it ONCE as the
+     static plan — do NOT track per-issue progress in it (the SM derives
+     progress from live GitHub state). Its existence on main is the "sequencing
+     done" marker — do NOT use labels for control flow.
+  6. Return a structured result to the Scrum Master, e.g.:
+       {"stage":"sequencing","status":"done","issues":[...],
+        "groups":[[...],[...]],"build_order":[...],"problem":null}
+
+  If dependency analysis reveals something that contradicts the approved
+  spec (e.g. a hidden coupling between issues assumed independent), do not
+  silently work around it — return status "blocked" with the problem
+  described, for the Scrum Master to escalate. There is no human approval
+  gate at this stage; proceed automatically otherwise.
+# GitHub write access is required here: create issues, comment, and commit
+# spec/build-order.md (no label control flow — see coding-workflow.md). It is
+# provided both by agent_toolset_20260401 (authenticated `gh` / git via the
+# Resource's authorization_token) AND by the GitHub remote MCP server below,
+# which exposes typed GitHub tools (issues, PRs, file contents) as a robust
+# alternative to shelling out to `gh`.
+mcp_servers:
+  # GitHub's hosted remote MCP server (a `type: url` connector). Supply a GitHub
+  # token with repo + issues write scope as `authorization_token`, injected as a
+  # secret at launch — never commit a literal token; the ${...} placeholder must
+  # be substituted at deploy time. Narrow the exposed tools via
+  # tool_configuration.allowed_tools if you want a tighter surface.
+  - type: url
+    url: https://api.githubcopilot.com/mcp/
+    name: github
+    authorization_token: "${GITHUB_MCP_TOKEN}"
+tools:
+  - configs: []
+    default_config:
+      enabled: true
+      permission_policy:
+        type: always_allow
+    type: agent_toolset_20260401
+  - configs: []
+    default_config:
+      enabled: true
+      permission_policy:
+        type: always_allow
+    mcp_server_name: github
+    type: mcp_toolset
+# issue-decomposition, uploaded to the workspace as a custom skill and
+# referenced by its skill_id (resolved from the workspace registry at runtime;
+# must be the same workspace the agent runs in).
+skills:
+  - type: custom
+    skill_id: skill_01TR1xtctooMQ8b9TBYHQ45J
+    version: latest
+metadata: {}
