@@ -1,7 +1,7 @@
 # SPEC — Evidence Preservation & Review Pipeline
 
 > **Status: Draft — forward-looking.** This describes a *later product* that builds
-> on the current `onedrive-enum` tooling. Only **Stage 1** (download + hash +
+> on the current `aqueduct` tooling. Only **Stage 1** (download + hash +
 > validate) exists today; Stages 2–4 are specified here, not yet implemented.
 > Examples are generic; substitute real tenants/containers when building.
 
@@ -26,7 +26,7 @@ surface. A database is the *ledger* that tracks state; it never holds evidence.
 ```mermaid
 flowchart LR
     S["SharePoint share<br/>(specific people)"] --> D
-    subgraph Stage1["Stage 1 — Collect (exists today: onedrive-enum)"]
+    subgraph Stage1["Stage 1 — Collect (exists today: aqueduct)"]
         D["download<br/>+ SHA-256 (acquisition)"] --> V1["validate<br/>size + completeness"]
     end
     V1 --> U
@@ -74,12 +74,12 @@ flowchart LR
 | Properties | cryptographic, tamper-evident, portable (`sha256sum`) | fast, non-cryptographic; guards the wire, enables Azure-native verify |
 | Where it lives | the ledger (authoritative) | on the blob (Azure metadata) |
 
-So during a stream-to-Blob upload ([ADR-0008](adr/ADR-0008-STREAM-TO-BLOB-PRESERVATION.md)),
+So during a stream-to-Blob upload ([ADR-0008](adr/0008-STREAM-TO-BLOB-PRESERVATION.md)),
 each chunk both **updates our SHA-256** (evidence) and is **staged with content
 validation** so Azure verifies its MD5/CRC64 on arrival (transport). SHA-256 is the
 authoritative fingerprint; MD5 is belt-and-suspenders at the storage layer and lets
 Azure-native tools verify the blob without our tooling. See
-[ADR-0006](adr/ADR-0006-SHA256-INTEGRITY-HASH.md) for why SHA-256 (not QuickXorHash).
+[ADR-0006](adr/0006-SHA256-INTEGRITY-HASH.md) for why SHA-256 (not QuickXorHash).
 
 ## 5. Idempotency, state machine & ledger
 
@@ -124,7 +124,7 @@ tables**), with its digest periodically **anchored in immutable WORM Blob** so t
 sits outside the mutable store; **Azure Confidential Ledger** is the stronger
 tamper-proof option, and hash-chaining rows is the portable minimum. It is a **managed**
 service the end user never administers. Full reasoning:
-[ADR-0009](adr/ADR-0009-TAMPER-EVIDENT-LEDGER.md).
+[ADR-0009](adr/0009-TAMPER-EVIDENT-LEDGER.md).
 
 ## 6. Classification (Stage 3) — Blob-side, over ALL evidence
 
@@ -223,7 +223,7 @@ is included, and what is missing?*
 
 The intended users are **independent / small defense-counsel practices with limited
 resources and no IT staff**, so the operating model optimizes for *teachability and
-zero server management* — see [ADR-0007](adr/ADR-0007-DESKTOP-VM-OPERATING-MODEL.md).
+zero server management* — see [ADR-0007](adr/0007-DESKTOP-VM-OPERATING-MODEL.md).
 
 - **Primary — desktop VM (cloud PC).** A paralegal signs in to the share in the
   desktop's own browser and runs the tool; no server to administer, no injected
@@ -232,7 +232,7 @@ zero server management* — see [ADR-0007](adr/ADR-0007-DESKTOP-VM-OPERATING-MOD
 - **Preserve by streaming** — on the desktop, evidence is streamed **straight to the
   Blob vault and never lands locally** (the FSLogix profile disk is small/volatile, and
   evidence shouldn't linger). Only transient in-RAM chunks touch the machine. Restart
-  is ledger-driven; see [ADR-0008](adr/ADR-0008-STREAM-TO-BLOB-PRESERVATION.md).
+  is ledger-driven; see [ADR-0008](adr/0008-STREAM-TO-BLOB-PRESERVATION.md).
 - **Option — server/container** for resourced organizations wanting automated,
   scheduled, IaC-managed collection.
 - **Option — local disk** download + validate, for users who just want files on a drive
@@ -242,7 +242,7 @@ The one manual touch on any host is the **interactive MFA login** to mint/refres
 web session — a feature on the desktop (familiar browser sign-in), a Key-Vault-fed step
 on a server.
 
-## 11. Relationship to `onedrive-enum` (today)
+## 11. Relationship to `aqueduct` (today)
 
 - **Stage 1 exists**: `login` → `webenum` (dated manifest) → `filecopy` (download +
   inline SHA-256 in `filecopy_results.csv`) → `validate` (size/completeness). This

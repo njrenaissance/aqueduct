@@ -17,7 +17,7 @@ two would silently enumerate the wrong thing. The download and validate steps do
 `share_url` and the site `root.webUrl` for provenance).
 
 Options considered: a config file in the project (rejected — data doesn't belong in
-the repo, per [ADR-0003](ADR-0003-AUTH-IN-USER-CONFIG-DIR.md)); a file in `~/.odenum`
+the repo, per [ADR-0003](0003-AUTH-IN-USER-CONFIG-DIR.md)); a file in `~/.aqueduct`
 (workable but another file to manage); or an environment variable (standard, visible,
 easy to override per-invocation).
 
@@ -31,7 +31,7 @@ the current shell session — not persisted machine-wide.**
   **not** write the variable to the persistent user environment.
 - `login` and `webenum` take the share URL as an **optional** argument that defaults
   to `ONEDRIVE_SHARE_URL`; an explicit argument always wins.
-- Resolution lives in one helper (`onedrive_enum.shareurl`): arg → env → a clear
+- Resolution lives in one helper (`aqueduct.shareurl`): arg → env → a clear
   error telling the user to run `login` or pass a URL.
 - `webenum enumerate` **echoes the resolved URL** (`Enumerating share: …`) before it
   walks, so a wrong value is visible before a manifest is produced.

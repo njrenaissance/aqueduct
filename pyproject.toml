@@ -1,31 +1,30 @@
 [project]
-name = "onedrive-enum"
+name = "aqueduct"
 version = "0.1.0"
 description = "Enumerate, download, and validate a OneDrive/SharePoint discovery share, with a defensible dated record."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.13"
 dependencies = [
     "httpx>=0.28.1",
-    "msal>=1.38.0",
     "playwright>=1.62.0",
-    "requests>=2.34.2",
 ]
 
 [project.scripts]
 # Console entry points — installed by `uv sync`, runnable from the repo root
 # (they read/write data in the current working directory).
-login = "onedrive_enum.login:main"
-webenum = "onedrive_enum.webenum:main"
-filecopy = "onedrive_enum.filecopy:main"
-validate = "onedrive_enum.validate:main"
-odenum = "onedrive_enum.odenum:main"
+login = "aqueduct.login:main"
+webenum = "aqueduct.webenum:main"
+filecopy = "aqueduct.filecopy:main"
+validate = "aqueduct.validate:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/onedrive_enum"]
+packages = ["src/aqueduct"]
 
 [dependency-groups]
 dev = [
@@ -83,8 +82,3 @@ disallow_untyped_defs = false
 warn_return_any = true
 warn_unused_configs = true
 no_implicit_optional = true
-
-[[tool.mypy.overrides]]
-# msal ships no type stubs / py.typed marker.
-module = ["msal.*"]
-ignore_missing_imports = true

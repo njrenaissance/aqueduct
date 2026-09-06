@@ -3,14 +3,14 @@ the authenticated web session for the other tools to reuse.
 
 This is step 1 of the workflow. It opens a REAL browser window (sign-in involves
 redirects and MFA, which cannot be done headless), you sign in as the account the
-share was granted to, and it writes the session to ~/.odenum/auth_state.json. The
+share was granted to, and it writes the session to ~/.aqueduct/auth_state.json. The
 enumerate and download steps then ride that saved session headlessly - no further
 sign-in - until it expires.
 
     login <share-url>      # HEADED; sign in; saves the session + remembers the URL
 
 The saved session is as sensitive as a password: it is a live logged-in session.
-It lives in the per-user config dir (~/.odenum), outside any repo. It also expires
+It lives in the per-user config dir (~/.aqueduct), outside any repo. It also expires
 - when webenum/filecopy start returning 401/403 or land on a login page, re-run
 this (with no argument, since the URL is remembered).
 """
@@ -22,9 +22,9 @@ import sys
 
 from playwright.sync_api import sync_playwright
 
-from onedrive_enum import paths, shareurl
+from aqueduct import paths, shareurl
 
-# Auth session lives in the per-user config dir (~/.odenum), not the project.
+# Auth session lives in the per-user config dir (~/.aqueduct), not the project.
 AUTH_STATE_PATH = paths.AUTH_STATE_PATH
 
 

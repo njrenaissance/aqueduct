@@ -3,7 +3,7 @@ honors Range) with the server-relative path percent-encoded."""
 
 from __future__ import annotations
 
-from onedrive_enum import filecopy
+from aqueduct import filecopy
 
 
 def test_download_url_uses_download_aspx_and_encodes_path():

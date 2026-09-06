@@ -1,6 +1,8 @@
 # ADR-0006 — SHA-256 as our integrity hash (not Microsoft's QuickXorHash)
 
-**Status:** Accepted
+**Status:** Accepted — the SHA-256 decision stands, but the closing note that
+`quickxor.py` is retained for `odenum`'s Graph path is superseded by
+[ADR-0010](0010-WEB-SESSION-ONLY-REMOVE-GRAPH-PATH.md) (both were removed).
 
 ## Context
 
@@ -15,7 +17,7 @@ findings killed that rationale for the web-session path:
    (`RenderListDataAsStream`) exposes no content hash, and every endpoint that does
    carry `file.hashes.quickXorHash` — Graph, and the vroom driveItem behind each
    item's `.spItemUrl` — returns **403** under our web session (the same
-   authorization wall as [ADR-0001](ADR-0001-ENUMERATE-VIA-WEB-SESSION.md), verified
+   authorization wall as [ADR-0001](0001-ENUMERATE-VIA-WEB-SESSION.md), verified
    by probing the live share). So there is **nothing to match** against.
 2. **QuickXorHash is slow.** Our faithful pure-Python port runs at **~43 MB/s**;
    hashing 533 GB would take ~3.5 h per core.
@@ -65,5 +67,5 @@ Use **SHA-256** as the integrity hash for the web-session path.
   fingerprint of the bytes we collected* (integrity from acquisition forward), not
   proof of equality with the share's own stored hash. Validation against the source
   manifest therefore stays **size + completeness**
-  ([ADR-0002](ADR-0002-DOWNLOAD-VIA-DOWNLOAD-ASPX.md)); the SHA-256 is the
+  ([ADR-0002](0002-DOWNLOAD-VIA-DOWNLOAD-ASPX.md)); the SHA-256 is the
   chain-of-custody fingerprint on top.

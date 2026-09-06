@@ -5,7 +5,7 @@ yet implemented in the shipped collection tool).
 
 ## Context
 
-On the primary host — a cloud desktop ([ADR-0007](ADR-0007-DESKTOP-VM-OPERATING-MODEL.md))
+On the primary host — a cloud desktop ([ADR-0007](0007-DESKTOP-VM-OPERATING-MODEL.md))
 — local disk is small and volatile (FSLogix profile container), and evidence should
 **not persist on the desktop** any longer than necessary (custody + cleanup). Landing
 500+ GB locally, then uploading, is doubly wrong there.
@@ -25,7 +25,7 @@ Streaming mechanics (Azure block blobs):
 
 **Two hash layers, different jobs — they do not compete:**
 
-- **SHA-256 = the evidence fingerprint** (ours; [ADR-0006](ADR-0006-SHA256-INTEGRITY-HASH.md)):
+- **SHA-256 = the evidence fingerprint** (ours; [ADR-0006](0006-SHA256-INTEGRITY-HASH.md)):
   cryptographic, tamper-evident, portable, recorded in the ledger. This is what proves
   byte integrity across every hop and at the destination.
 - **MD5 = Azure's native transport/content check**: stage each block with content
@@ -58,7 +58,7 @@ This mirrors the disk path's "inline for a fresh download, from-disk for a resum
 - **Evidence never persists on the desktop** — only transient in-RAM chunks; a strong
   custody property and the answer to the FSLogix constraint.
 - The **ledger is load-bearing** for restarts (state) as well as integrity — reinforcing
-  [ADR-0009](ADR-0009-TAMPER-EVIDENT-LEDGER.md).
+  [ADR-0009](0009-TAMPER-EVIDENT-LEDGER.md).
 - Resume is more involved than the disk `.part` model, and **validation shifts** from
   disk-vs-manifest to **Blob-vs-manifest** (size + our SHA-256, plus Azure's `Content-MD5`).
 - Resumed files cost one extra in-region read-back to hash; one-shot files stay free.
