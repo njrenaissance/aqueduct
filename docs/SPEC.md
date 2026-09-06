@@ -64,8 +64,22 @@ flowchart LR
 - **The same hash is re-checked at every boundary**: local→Blob (verify after
   upload), Blob→SharePoint (verify after sync). A stage is only "completed" when
   the hash matches — never merely because bytes arrived.
-- **Optional MD5** may also be recorded to line up with Azure Blob's native
-  `Content-MD5` verification on upload; SHA-256 remains the authoritative fingerprint.
+
+**SHA-256 and MD5 are two layers with different jobs — they don't compete:**
+
+| | SHA-256 | MD5 |
+|---|---|---|
+| Role | **the evidence fingerprint** (chain of custody) | **Azure's transport/content check** |
+| Who computes it | us, inline, and re-verified at each hop | Azure, per block on receipt + blob `Content-MD5` on commit |
+| Properties | cryptographic, tamper-evident, portable (`sha256sum`) | fast, non-cryptographic; guards the wire, enables Azure-native verify |
+| Where it lives | the ledger (authoritative) | on the blob (Azure metadata) |
+
+So during a stream-to-Blob upload ([ADR-0008](adr/ADR-0008-STREAM-TO-BLOB-PRESERVATION.md)),
+each chunk both **updates our SHA-256** (evidence) and is **staged with content
+validation** so Azure verifies its MD5/CRC64 on arrival (transport). SHA-256 is the
+authoritative fingerprint; MD5 is belt-and-suspenders at the storage layer and lets
+Azure-native tools verify the blob without our tooling. See
+[ADR-0006](adr/ADR-0006-SHA256-INTEGRITY-HASH.md) for why SHA-256 (not QuickXorHash).
 
 ## 5. Idempotency, state machine & ledger
 
@@ -103,6 +117,14 @@ PENDING → IN_PROGRESS → ARRIVED → VERIFIED(=completed)
 | `classification` | `searchable` \| `link_only` (+ reason) |
 | `*_verified_at` | timestamps per stage |
 | `resets` | append-only list of {when, who, reason} |
+
+**The ledger must be tamper-evident** — it *is* the chain-of-custody record, not just
+bookkeeping. It lives in a verifiable stateful store (default: **Azure SQL ledger
+tables**), with its digest periodically **anchored in immutable WORM Blob** so trust
+sits outside the mutable store; **Azure Confidential Ledger** is the stronger
+tamper-proof option, and hash-chaining rows is the portable minimum. It is a **managed**
+service the end user never administers. Full reasoning:
+[ADR-0009](adr/ADR-0009-TAMPER-EVIDENT-LEDGER.md).
 
 ## 6. Classification (Stage 3) — Blob-side, over ALL evidence
 
@@ -197,7 +219,30 @@ is included, and what is missing?*
   reviewers to alter evidence.
 - Every state change and every reset is recorded in the ledger for audit.
 
-## 10. Relationship to `onedrive-enum` (today)
+## 10. Hosting & operating model
+
+The intended users are **independent / small defense-counsel practices with limited
+resources and no IT staff**, so the operating model optimizes for *teachability and
+zero server management* — see [ADR-0007](adr/ADR-0007-DESKTOP-VM-OPERATING-MODEL.md).
+
+- **Primary — desktop VM (cloud PC).** A paralegal signs in to the share in the
+  desktop's own browser and runs the tool; no server to administer, no injected
+  credentials. Heavy integrity (WORM vault, tamper-evident ledger) lives in **managed
+  Azure services the user never administers**.
+- **Preserve by streaming** — on the desktop, evidence is streamed **straight to the
+  Blob vault and never lands locally** (the FSLogix profile disk is small/volatile, and
+  evidence shouldn't linger). Only transient in-RAM chunks touch the machine. Restart
+  is ledger-driven; see [ADR-0008](adr/ADR-0008-STREAM-TO-BLOB-PRESERVATION.md).
+- **Option — server/container** for resourced organizations wanting automated,
+  scheduled, IaC-managed collection.
+- **Option — local disk** download + validate, for users who just want files on a drive
+  and no cloud. (This is what the shipped tool does today.)
+
+The one manual touch on any host is the **interactive MFA login** to mint/refresh the
+web session — a feature on the desktop (familiar browser sign-in), a Key-Vault-fed step
+on a server.
+
+## 11. Relationship to `onedrive-enum` (today)
 
 - **Stage 1 exists**: `login` → `webenum` (dated manifest) → `filecopy` (download +
   inline SHA-256 in `filecopy_results.csv`) → `validate` (size/completeness). This
@@ -206,7 +251,7 @@ is included, and what is missing?*
   verifier, classifier/router, SharePoint sync, and the ledger database that ties
   them together.
 
-## 11. Open questions
+## 12. Open questions
 
 - Ledger store: managed SQL vs. a lightweight embedded DB for a single-operator
   deployment.
