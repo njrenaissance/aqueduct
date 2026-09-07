@@ -4,9 +4,15 @@ SharePoint share, driven by an already-enumerated manifest.
 This is the download counterpart to webenum.py. webenum produces the dated record
 of *what the share contained* (manifest.json/.csv); filecopy pulls the bytes.
 
-Why a dedicated async downloader:
-    These "specific people"/guest shares authorize the interactive web session,
-    not a Graph token - so we ride the same saved cookies webenum uses
+Why a dedicated async downloader (and not rclone/aria2):
+    This is a *logical acquisition of a remote source* - physical (block-device)
+    acquisition is impossible when the data lives on someone else's datacenter disks,
+    so acquisition moves up to the file/API layer. General downloaders hash to *verify
+    against a supplied digest*; we hash to *produce the acquisition record*. See
+    docs/adr/0011-LOGICAL-ACQUISITION-OF-A-REMOTE-SOURCE.md for the full framing.
+
+    Concretely: these "specific people"/guest shares authorize the interactive web
+    session, not a Graph token - so we ride the same saved cookies webenum uses
     (auth_state.json), never the Graph API. And the share is large (500+ GB, some
     files 50+ GB), so we download many files at once, cap concurrency with a
     semaphore, and resume partial files byte-accurately on retry.
