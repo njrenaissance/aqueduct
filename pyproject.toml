@@ -53,6 +53,7 @@ show_missing = true
 [tool.ruff]
 line-length = 120
 target-version = "py313"
+exclude = ["basic/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "N", "ARG", "SIM", "ERA", "PLR", "C901"]

@@ -61,9 +61,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         prog="login", description="Headed sign-in; save the web session and remember the share URL."
     )
-    ap.add_argument(
-        "share_url", nargs="?", help=f"share URL (default: ${shareurl.ENV}, once saved by a prior login)"
-    )
+    ap.add_argument("share_url", nargs="?", help=f"share URL (default: ${shareurl.ENV}, once saved by a prior login)")
     args = ap.parse_args()
     return login(shareurl.resolve(args.share_url))
 
