@@ -40,6 +40,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from aqueduct import metadata
+
 _HASH_CHUNK = 4 * 1024 * 1024
 _COLUMNS = [
     "path",
@@ -185,47 +187,79 @@ def _scan_extras(dest: Path, manifest_paths: set[str]) -> list[dict]:
     return extras
 
 
-def validate(manifest: dict, dest: Path, do_hash: bool, results_path: Path, reference: dict[str, str]) -> int:
-    files = [i for i in manifest["items"] if i["type"] == "file"]
-    manifest_paths = {i["path"].replace("\\", "/") for i in files}
-
-    mode = "size only"
-    if do_hash:
-        mode = f"size + SHA-256 (verifying vs {len(reference)} recorded)" if reference else "size + SHA-256"
-    print(f"Validating {len(files)} files against {dest}/ ({mode})...\n", flush=True)
-
-    rows: list[dict] = []
-    for n, item in enumerate(files, 1):
-        rows.append(_check_file(item, dest, do_hash, reference))
-        if n % 500 == 0:
-            print(f"  ...{n}/{len(files)} checked", flush=True)
-    rows += _scan_extras(dest, manifest_paths)
-
+def _write_results_csv(
+    results_path: Path,
+    rows: list[dict],
+    run_metadata: dict | None = None,
+) -> None:
+    """Write validation results CSV with optional provenance headers."""
     with open(results_path, "w", newline="", encoding="utf-8-sig") as fh:
+        if run_metadata:
+            provenance = metadata.format_metadata_header(
+                tool=run_metadata.get("tool", "validate"),
+                version=run_metadata.get("tool_version", ""),
+                operator=run_metadata.get("operator", "unspecified"),
+                host_info=run_metadata.get("host_info", {}),
+                started_at_utc=run_metadata.get("started_at_utc", ""),
+                completed_at_utc=run_metadata.get("completed_at_utc", ""),
+            )
+            for line in provenance:
+                fh.write(line + "\r\n")
         w = csv.writer(fh)
         w.writerow(_COLUMNS)
         for r in rows:
             w.writerow([r[c] for c in _COLUMNS])
 
-    c = Counter(r["status"] for r in rows)
-    hash_mismatch = sum(1 for r in rows if r["hash_check"] == "mismatch")
-    segment_mismatch = sum(1 for r in rows if r["segment_check"] == "mismatch")
-    print("\n" + "-" * 60)
-    summary = f"OK={c['ok']}  MISSING={c['missing']}  MISMATCH={c['mismatch']}  EXTRA={c['extra']}"
-    if do_hash and reference:
-        summary += f"  HASH-MISMATCH={hash_mismatch}"
-    if segment_mismatch:
-        summary += f"  SEGMENT-MISMATCH={segment_mismatch}"
-    print(summary)
-    print(f"Per-file results: {results_path}")
 
-    failed = c["missing"] + c["mismatch"] + c["extra"] + hash_mismatch + segment_mismatch
-    if failed:
-        print(f"RESULT: FAIL  ({failed} problem(s)) - re-run filecopy to fill/repair.")
-    else:
-        tail = " SHA-256 verified." if (do_hash and reference) else (" Hashes recorded." if do_hash else "")
-        print("RESULT: PASS  every manifest file is present at the expected size." + tail)
-    return 1 if failed else 0
+def validate(
+    manifest: dict,
+    dest: Path,
+    do_hash: bool,
+    results_path: Path,
+    reference: dict[str, str],
+    operator_identity: str | None = None,
+) -> int:
+    with metadata.timed_run("validate", operator_identity) as run_metadata:
+        files = [i for i in manifest["items"] if i["type"] == "file"]
+        manifest_paths = {i["path"].replace("\\", "/") for i in files}
+
+        mode = "size only"
+        if do_hash:
+            mode = f"size + SHA-256 (verifying vs {len(reference)} recorded)" if reference else "size + SHA-256"
+        print(f"Validating {len(files)} files against {dest}/ ({mode})...\n", flush=True)
+
+        rows: list[dict] = []
+        for n, item in enumerate(files, 1):
+            rows.append(_check_file(item, dest, do_hash, reference))
+            if n % 500 == 0:
+                print(f"  ...{n}/{len(files)} checked", flush=True)
+        rows += _scan_extras(dest, manifest_paths)
+
+        _write_results_csv(results_path, rows, run_metadata)
+
+        c = Counter(r["status"] for r in rows)
+        hash_mismatch = sum(1 for r in rows if r["hash_check"] == "mismatch")
+        segment_mismatch = sum(1 for r in rows if r["segment_check"] == "mismatch")
+        print("\n" + "-" * 60)
+        summary = f"OK={c['ok']}  MISSING={c['missing']}  MISMATCH={c['mismatch']}  EXTRA={c['extra']}"
+        if do_hash and reference:
+            summary += f"  HASH-MISMATCH={hash_mismatch}"
+        if segment_mismatch:
+            summary += f"  SEGMENT-MISMATCH={segment_mismatch}"
+        print(summary)
+        print(f"Per-file results: {results_path}")
+
+        failed = c["missing"] + c["mismatch"] + c["extra"] + hash_mismatch + segment_mismatch
+        if failed:
+            print(f"RESULT: FAIL  ({failed} problem(s)) - re-run filecopy to fill/repair.")
+        else:
+            tail = " SHA-256 verified." if (do_hash and reference) else (" Hashes recorded." if do_hash else "")
+            print("RESULT: PASS  every manifest file is present at the expected size." + tail)
+
+        # Write metadata sidecar
+        metadata.write_metadata_sidecar(results_path, run_metadata)
+
+        return 1 if failed else 0
 
 
 def main() -> int:
@@ -241,11 +275,16 @@ def main() -> int:
     ap.add_argument(
         "--results", default="validate_results.csv", help="per-file results CSV (default validate_results.csv)"
     )
+    ap.add_argument(
+        "--operator",
+        default=None,
+        help="operator identity for validation record (email/username; opt-in to avoid PII; default: unspecified)",
+    )
     args = ap.parse_args()
 
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     reference = _load_reference(Path(args.verify_against)) if args.hash else {}
-    return validate(manifest, Path(args.dest), args.hash, Path(args.results), reference)
+    return validate(manifest, Path(args.dest), args.hash, Path(args.results), reference, args.operator)
 
 
 if __name__ == "__main__":
