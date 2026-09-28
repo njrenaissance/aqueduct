@@ -1,0 +1,8 @@
+version: '3.8'
+
+services:
+  # Placeholder for integration test services.
+  # Add services here as integration tests are developed.
+  placeholder:
+    image: alpine:latest
+    command: echo "No integration test services configured yet"
