@@ -1,8 +1,8 @@
-# OneDrive Share Preservation — Workflow
+# Aqueduct — Workflow
 
-A step-by-step guide to producing a **dated, defensible record** of a OneDrive /
-SharePoint "specific people" share, downloading every file, and proving the download
-matches the record.
+A step-by-step guide to using **Aqueduct** to produce a **dated, defensible record**
+of a OneDrive / SharePoint "specific people" share, downloading every file, and
+proving the download matches the record.
 
 > **Examples use a fictional share.** Replace the sample URL, account, and host with
 > your own everywhere they appear:
@@ -12,21 +12,24 @@ matches the record.
 
 ## Overview
 
-There are four steps. You sign in **once**; the saved session and share URL are
-reused by the later steps until the session expires.
+**Step 0 (`login`) is only needed if you're not already signed in.** It persists
+(step 1) the session (`~/.aqueduct`) and share URL, which steps 2–4 reuse until the
+session expires — so on a machine that's already authenticated, start at step 2.
 
 ```mermaid
 flowchart LR
-    A["1. login<br/>sign in (browser)"] --> B["2. webenum<br/>enumerate"]
-    B --> C["3. filecopy<br/>download"]
-    C --> D["4. validate<br/>verify"]
-    A -. saves .-> S["~/.odenum session<br/>+ ONEDRIVE_SHARE_URL"]
-    S -. reused .-> B & C & D
+    Q{"authenticated?"} -- "no" --> L["0 · login<br/>sign in (browser)"]
+    Q -- "yes" --> P["1 · persisted session<br/>~/.aqueduct + ONEDRIVE_SHARE_URL"]
+    L --> P
+    P --> B["2 · webenum<br/>enumerate"]
+    B --> C["3 · filecopy<br/>download"]
+    C --> D["4 · validate<br/>verify"]
 ```
 
 | Step | Command | Produces |
 |------|---------|----------|
-| 1. Sign in | `login "<share-url>"` | Saved session in `~/.odenum` + remembered URL |
+| 0. Sign in (if needed) | `login "<share-url>"` | Saved session in `~/.aqueduct` + remembered URL |
+| 1. (persisted) | — | `~/.aqueduct` session + `ONEDRIVE_SHARE_URL`, reused by steps 2–4 |
 | 2. Enumerate | `webenum enumerate` | `manifest.json` + `manifest.csv` (the dated record) |
 | 3. Download | `filecopy -c 8` | Every file under `download/` |
 | 4. Validate | `validate --hash` | `validate_results.csv` (pass/fail + hashes) |
@@ -53,7 +56,7 @@ All commands below are run with `uv run <command>` from that folder.
 
 ---
 
-## Step 1 — Sign in (once)
+## Step 0 — Sign in (only if not already authenticated)
 
 ```bash
 uv run login "<share-url>"
@@ -63,7 +66,7 @@ A real browser window opens. Sign in as the account the share was granted to, ti
 **"Stay signed in"** if offered, and wait until you can actually see the shared
 files. Return to the terminal and press **Enter**.
 
-This saves the session to `~/.odenum/auth_state.json` and prints a command to set
+This saves the session to `~/.aqueduct/auth_state.json` and prints a command to set
 `ONEDRIVE_SHARE_URL` for the current terminal, so `webenum enumerate` needs no URL.
 The URL is per-case, so it is **not** kept across terminals — in a new terminal, run
 `login` again (or pass the URL) rather than risk enumerating the wrong share.
@@ -125,7 +128,7 @@ Reconciles `download/` against `manifest.json` and reports, per file:
 - **EXTRA** — on disk but not in the record
 
 It prints **PASS** or **FAIL** and writes `validate_results.csv`. `--hash` also
-records each file's QuickXorHash — a dated fingerprint of the exact bytes you hold,
+records each file's SHA-256 — a dated fingerprint of the exact bytes you hold,
 useful for proving later that nothing changed.
 
 If anything fails, re-run `filecopy` to fill the gaps, then validate again.

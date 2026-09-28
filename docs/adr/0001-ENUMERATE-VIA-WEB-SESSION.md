@@ -71,11 +71,11 @@ cookies are authorized for. Output is rebuilt into the same `manifest.json` sche
 
 ## Consequences
 
-- We need a saved browser session (see [ADR-0003](ADR-0003-AUTH-IN-USER-CONFIG-DIR.md))
+- We need a saved browser session (see [ADR-0003](0003-AUTH-IN-USER-CONFIG-DIR.md))
   and a browser automation dependency (Playwright).
 - **Hashes are weaker evidence here.** Graph returns a server-computed `quickXorHash`
   per file; the web listing does not expose one, so validation falls back to **size**
-  (see [ADR-0002](ADR-0002-DOWNLOAD-VIA-DOWNLOAD-ASPX.md) for how we still record a
+  (see [ADR-0002](0002-DOWNLOAD-VIA-DOWNLOAD-ASPX.md) for how we still record a
   dated hash of the downloaded bytes). This is a property of the data source, not a
   bug.
 - **Prefer `odenum.py` (Graph) when it works** — for "anyone with the link" shares,

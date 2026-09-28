@@ -12,7 +12,7 @@ is the "right" answer *only* for an organization with people to run it — for t
 actual users, a server "someone has to manage" is a barrier that kills adoption.
 
 The workload is also mostly interactive-by-nature at the one hard point: the
-"specific people" share requires an **interactive MFA sign-in** ([ADR-0001](ADR-0001-ENUMERATE-VIA-WEB-SESSION.md)),
+"specific people" share requires an **interactive MFA sign-in** ([ADR-0001](0001-ENUMERATE-VIA-WEB-SESSION.md)),
 which is awkward on a headless server (inject/refresh a saved session) but trivial on
 a desktop (sign in in the browser).
 
@@ -23,10 +23,10 @@ alternatives:
 
 - **Primary — desktop VM.** A paralegal signs in to the share in the desktop's own
   browser and runs the tool. No server to administer, no injected credentials. The
-  session lives on that machine ([ADR-0003](ADR-0003-AUTH-IN-USER-CONFIG-DIR.md)).
+  session lives on that machine ([ADR-0003](0003-AUTH-IN-USER-CONFIG-DIR.md)).
 - **Heavy integrity is delegated to managed Azure services** the user never
   administers — the immutable WORM vault (Blob) and the tamper-evident ledger
-  ([ADR-0009](ADR-0009-TAMPER-EVIDENT-LEDGER.md)). Server-grade durability, no server
+  ([ADR-0009](0009-TAMPER-EVIDENT-LEDGER.md)). Server-grade durability, no server
   to run.
 - **Option — server/container** paradigm for resourced organizations that want
   automated, scheduled, IaC-managed collection.
