@@ -1,33 +1,9 @@
-# Auth — never commit (live credentials / a logged-in web session).
-# These now live in ~/.odenum (outside the repo); kept here as defense-in-depth
-# in case a token is ever written into the working tree.
-.token_cache.json
-auth_state.json
+.claude/settings.local.json
 
-# Working data — never part of the project. Per-case runs live in ./data/.
-/data/
-download/
-raw/
-manifest*.json
-manifest*.csv
-filecopy.log
-filecopy_results.csv
-validate_results.csv
-
-# Python
-__pycache__/
-*.pyc
+# Virtual environments
 .venv/
 venv/
+env/
 
-# Build / packaging
-build/
-dist/
-*.egg-info/
-
-# Tooling caches / reports
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-.coverage
-htmlcov/
+# Environment variables
+.env
