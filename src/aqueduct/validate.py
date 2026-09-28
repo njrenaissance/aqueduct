@@ -235,8 +235,6 @@ def validate(
                 print(f"  ...{n}/{len(files)} checked", flush=True)
         rows += _scan_extras(dest, manifest_paths)
 
-        _write_results_csv(results_path, rows, run_metadata)
-
         c = Counter(r["status"] for r in rows)
         hash_mismatch = sum(1 for r in rows if r["hash_check"] == "mismatch")
         segment_mismatch = sum(1 for r in rows if r["segment_check"] == "mismatch")
@@ -256,10 +254,11 @@ def validate(
             tail = " SHA-256 verified." if (do_hash and reference) else (" Hashes recorded." if do_hash else "")
             print("RESULT: PASS  every manifest file is present at the expected size." + tail)
 
-        # Write metadata sidecar
-        metadata.write_metadata_sidecar(results_path, run_metadata)
+    # Write results and metadata after timing is complete
+    _write_results_csv(results_path, rows, run_metadata)
+    metadata.write_metadata_sidecar(results_path, run_metadata)
 
-        return 1 if failed else 0
+    return 1 if failed else 0
 
 
 def main() -> int:

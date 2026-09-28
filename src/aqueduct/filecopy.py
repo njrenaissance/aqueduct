@@ -575,10 +575,10 @@ async def run(  # noqa: PLR0913, PLR0917
                     table[r.path] = _row_values(r)
                     now = time.monotonic()
                     if done % _FLUSH_EVERY == 0 or now - last_flush >= _FLUSH_SECONDS:
-                        _write_results(results_path, table, run_metadata)
+                        _write_results(results_path, table)
                         last_flush = now
             finally:
-                _write_results(results_path, table, run_metadata)
+                _write_results(results_path, table)
 
         ok = sum(r.status == "ok" for r in results)
         skip = sum(r.status == "skip" for r in results)
@@ -601,10 +601,11 @@ async def run(  # noqa: PLR0913, PLR0917
         else:
             log.info("RESULT: PASS - every targeted file is present at its manifest size.")
 
-        # Write metadata sidecar
-        metadata.write_metadata_sidecar(results_path, run_metadata)
+    # Write final results with metadata after timing is complete
+    _write_results(results_path, table, run_metadata)
+    metadata.write_metadata_sidecar(results_path, run_metadata)
 
-        return 1 if fail else 0
+    return 1 if fail else 0
 
 
 # --------------------------------------------------------------------------- #
