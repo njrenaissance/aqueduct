@@ -6,7 +6,7 @@ yet implemented in the shipped collection tool).
 ## Context
 
 The hash record is the chain-of-custody proof: it must resist tampering, and it also
-serves as the pipeline's resume/idempotency state ([ADR-0008](ADR-0008-STREAM-TO-BLOB-PRESERVATION.md)).
+serves as the pipeline's resume/idempotency state ([ADR-0008](0008-STREAM-TO-BLOB-PRESERVATION.md)).
 Two goals, often conflated, need different mechanisms:
 
 - **Tamper-evident** — any change is *detectable*.
@@ -34,7 +34,7 @@ immutable storage the operator cannot rewrite.**
   record is self-verifying even outside these services.
 
 The ledger is **managed** — provisioned once, run by Azure, never administered by the
-end user ([ADR-0007](ADR-0007-DESKTOP-VM-OPERATING-MODEL.md)).
+end user ([ADR-0007](0007-DESKTOP-VM-OPERATING-MODEL.md)).
 
 ## Consequences
 

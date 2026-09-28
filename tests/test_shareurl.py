@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from onedrive_enum import shareurl
+from aqueduct import shareurl
 
 
 def test_get_returns_none_when_unset(monkeypatch):

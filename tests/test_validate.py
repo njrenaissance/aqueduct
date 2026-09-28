@@ -6,7 +6,7 @@ from __future__ import annotations
 import csv
 import hashlib
 
-from onedrive_enum import validate
+from aqueduct import validate
 
 
 def _manifest(items):

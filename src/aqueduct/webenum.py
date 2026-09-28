@@ -1,6 +1,6 @@
 """webenum — enumerate a OneDrive/SharePoint "specific people" share via the
 authenticated *web* session, for shares that resolve in a browser but 403 on the
-Graph API (odenum.py's path).
+Graph API.
 
 Why this exists:
     Some SharePoint/OneDrive shares are granted to specific people (or guests)
@@ -24,7 +24,7 @@ library) 403s or returns nothing, run `discover` first to see the real endpoint
 and list path the web UI actually uses, then adapt enumerate. That is what
 `discover` is for; keep it.
 
-The saved session (~/.odenum/auth_state.json) is as sensitive as a password — it is
+The saved session (~/.aqueduct/auth_state.json) is as sensitive as a password — it is
 a live logged-in session for the recipient account. It lives outside the repo;
 re-run login.py when it expires.
 """
@@ -41,9 +41,9 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from playwright.sync_api import sync_playwright
 
-from onedrive_enum import paths, shareurl
+from aqueduct import paths, shareurl
 
-# Auth session lives in ~/.odenum; manifests and raw/ stay in the working directory.
+# Auth session lives in ~/.aqueduct; manifests and raw/ stay in the working directory.
 AUTH_STATE_PATH = paths.AUTH_STATE_PATH
 TOOL_VERSION = "0.1.0"
 
@@ -360,7 +360,7 @@ def _provenance_lines(manifest: dict) -> list[str]:
     them; the real header/data follow untouched."""
     c = manifest.get("counts", {})
     return [
-        "# onedrive-enum manifest (provenance; full record in manifest.json)",
+        "# aqueduct manifest (provenance; full record in manifest.json)",
         f"# share_url: {manifest.get('share_url', '')}",
         f"# enumerated_at_utc: {manifest.get('enumerated_at_utc', '')}",
         f"# enumerated_by: {manifest.get('enumerated_by', '')}",

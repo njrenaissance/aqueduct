@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 
-from onedrive_enum import webenum
+from aqueduct import webenum
 
 
 def test_created_iso_parses_sharepoint_format():
@@ -69,7 +69,7 @@ def test_write_csv_has_provenance_comments_and_rows(tmp_path):
     assert n == 2
 
     lines = out.read_text(encoding="utf-8-sig").splitlines()
-    assert lines[0].startswith("# onedrive-enum manifest")
+    assert lines[0].startswith("# aqueduct manifest")
     assert any(line.startswith("# share_url: https://host/:f:/r/share") for line in lines)
 
     # After the comment lines, a csv reader still sees the header + 2 data rows.

@@ -4,7 +4,7 @@
 
 ## Context
 
-Downloads reuse the same web session as enumeration ([ADR-0001](ADR-0001-ENUMERATE-VIA-WEB-SESSION.md)),
+Downloads reuse the same web session as enumeration ([ADR-0001](0001-ENUMERATE-VIA-WEB-SESSION.md)),
 so they must hit a SharePoint endpoint the cookies authorize. Two candidates serve
 raw file bytes under the web session:
 

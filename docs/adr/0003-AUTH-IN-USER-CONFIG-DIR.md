@@ -1,4 +1,4 @@
-# ADR-0003 — Auth tokens in `~/.odenum`; working data in the current directory
+# ADR-0003 — Auth tokens in `~/.aqueduct`; working data in the current directory
 
 **Status:** Accepted
 
@@ -13,15 +13,15 @@ The tools handle two very different kinds of file:
   These are per-case artifacts, often large, and are not part of the project.
 
 Originally both sat next to the code (`Path(__file__).parent`). After moving the
-code into a `src/` package ([ADR-0005](ADR-0005-SRC-PACKAGE-LAYOUT.md)), "next to the
+code into a `src/` package ([ADR-0005](0005-SRC-PACKAGE-LAYOUT.md)), "next to the
 code" became a package directory deep in `site-packages` — the wrong place for
 either kind of file. Two mistakes had to be designed out: writing a secret into the
 repo (one `git add .` from disaster), and scattering case data inside the package.
 
 ## Decision
 
-- **Auth tokens live in a per-user config directory, `~/.odenum`**
-  (`$USERPROFILE\.odenum` on Windows), resolved by `onedrive_enum.paths`. It is
+- **Auth tokens live in a per-user config directory, `~/.aqueduct`**
+  (`$USERPROFILE\.aqueduct` on Windows), resolved by `aqueduct.paths`. It is
   created on demand with user-only intent and sits outside any repository, so a
   session is shared across runs from any folder and cannot be committed.
 - **Working data lives in the current working directory.** Run the tools from a
@@ -37,5 +37,5 @@ in case a token is ever written into a working tree.
   working tree only ever holds code and (git-ignored) case data.
 - One session serves every case: sign in once, then `cd` into each case's data
   folder to run enumerate/download/validate.
-- Path helpers are centralized in `onedrive_enum.paths`, so the location is defined
+- Path helpers are centralized in `aqueduct.paths`, so the location is defined
   once. Changing it (e.g. honoring `XDG_CONFIG_HOME`) is a single-file change.
