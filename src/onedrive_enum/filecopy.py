@@ -113,12 +113,98 @@ def _feed_file(hasher: hashlib._Hash, path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Segment hashing - per-window SHA-256 for corruption localization
+# --------------------------------------------------------------------------- #
+class _SegmentHasher:
+    """Track segment boundaries and compute per-segment SHA-256 digests during streaming."""
+
+    def __init__(self, segment_size: int):
+        self.segment_size = segment_size
+        self.segments: list[dict] = []
+        self.current_segment_hash: hashlib._Hash = hashlib.sha256()
+        self.current_offset = 0
+        self.bytes_in_current = 0
+
+    def update(self, chunk: bytes) -> None:
+        """Feed chunk into segment hash; roll over on segment boundary."""
+        remaining = chunk
+        while remaining:
+            # Bytes left in current segment
+            space_left = self.segment_size - self.bytes_in_current
+            # Take what fits in current segment
+            take = remaining[:space_left]
+            self.current_segment_hash.update(take)
+            self.bytes_in_current += len(take)
+            remaining = remaining[len(take) :]
+            # Roll over to next segment if current is full
+            if self.bytes_in_current >= self.segment_size:
+                self._finalize_current_segment()
+
+    def finalize(self) -> list[dict]:
+        """Complete the current segment if any bytes remain; return full segment list."""
+        if self.bytes_in_current > 0:
+            self._finalize_current_segment()
+        return self.segments
+
+    def _finalize_current_segment(self) -> None:
+        """Close out the current segment and start a new one."""
+        if self.bytes_in_current == 0:
+            return  # Nothing to finalize
+        segment_index = len(self.segments)
+        self.segments.append(
+            {
+                "segment_index": segment_index,
+                "offset_bytes": self.current_offset,
+                "size_bytes": self.bytes_in_current,
+                "sha256": self.current_segment_hash.hexdigest(),
+            }
+        )
+        self.current_offset += self.bytes_in_current
+        self.bytes_in_current = 0
+        self.current_segment_hash = hashlib.sha256()
+
+
+def _segments_from_part(path: Path, segment_size: int) -> list[dict]:
+    """Recompute segment hashes for a complete file already on disk."""
+    hasher = _SegmentHasher(segment_size)
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(_HASH_CHUNK), b""):
+            hasher.update(block)
+    return hasher.finalize()
+
+
+def _feed_segment_hasher(hasher: _SegmentHasher, path: Path, num_bytes: int) -> None:
+    """Feed existing file bytes into segment hasher to seed a resumed download."""
+    with open(path, "rb") as f:
+        remaining = num_bytes
+        while remaining > 0:
+            take = min(_HASH_CHUNK, remaining)
+            block = f.read(take)
+            if not block:
+                break
+            hasher.update(block)
+            remaining -= len(block)
+
+
+# --------------------------------------------------------------------------- #
 # One file: streaming download with byte-accurate resume
 # --------------------------------------------------------------------------- #
 class Result:
-    __slots__ = ("path", "status", "size", "attempts", "seconds", "detail", "sha256")
+    __slots__ = (
+        "path",
+        "status",
+        "size",
+        "attempts",
+        "seconds",
+        "detail",
+        "sha256",
+        "segment_hashes",
+        "segment_size",
+    )
 
-    def __init__(self, path, status, size, attempts, seconds, detail="", sha256=""):
+    def __init__(
+        self, path, status, size, attempts, seconds, detail="", sha256="", segment_hashes=None, segment_size=0
+    ):
         self.path = path
         self.status = status      # "ok" | "skip" | "fail"
         self.size = size          # bytes on disk at end
@@ -126,6 +212,8 @@ class Result:
         self.seconds = seconds
         self.detail = detail
         self.sha256 = sha256      # SHA-256 (hex) of the final file, or "" if not hashed
+        self.segment_hashes = segment_hashes or []  # list of segment dicts with sha256/offset/size
+        self.segment_size = segment_size  # bytes per segment (e.g., 1 GiB)
 
 
 @dataclass
@@ -142,22 +230,31 @@ class _Ctx:
     hash_enabled: bool
     hash_sem: asyncio.Semaphore                 # caps concurrent on-disk hashing (disk-bound)
     prior_hashes: dict[tuple[str, int], str]    # (path, size) -> sha256 from a prior run
+    segment_size: int                           # bytes per segment (default 1 GiB)
 
 
 async def _stream_to_part(
-    client: httpx.AsyncClient, url: str, part: Path, expected: int, chunk: int, hash_enabled: bool
-) -> tuple[int, str | None]:
+    client: httpx.AsyncClient,
+    url: str,
+    part: Path,
+    expected: int,
+    chunk: int,
+    hash_enabled: bool,
+    segment_size: int,
+) -> tuple[int, str | None, list[dict]]:
     """Download `url` into `part`, resuming from whatever is already there.
 
-    Returns (final size, sha256-hex-or-None). SHA-256 is computed inline as bytes
-    stream from the network (free — no extra disk read); on a resume the existing
-    `.part` prefix is read once to seed the hasher. Raises on transport/HTTP errors
-    so the caller's retry loop can re-enter (and resume from the larger .part).
+    Returns (final size, sha256-hex-or-None, segment_list).
+    SHA-256 and segment hashes are computed inline as bytes stream from the network
+    (free — no extra disk read); on a resume the existing `.part` prefix is read once
+    to seed both hashers. Raises on transport/HTTP errors so the caller's retry loop
+    can re-enter (and resume from the larger .part).
     """
     existing = part.stat().st_size if part.exists() else 0
     if existing > expected:  # oversized/corrupt partial - start clean
         existing = 0
     hasher = hashlib.sha256() if hash_enabled else None
+    segment_hasher = _SegmentHasher(segment_size)
     headers = {"Range": f"bytes={existing}-"} if existing else {}
 
     async with client.stream("GET", url, headers=headers) as resp:
@@ -167,8 +264,10 @@ async def _stream_to_part(
             raise PermissionError(f"{resp.status_code} - session expired? re-run login")
         if resp.status_code == HTTPStatus.RANGE_NOT_SATISFIABLE:  # .part already complete
             await resp.aread()
+            # File already complete on disk; compute full-file hash and re-seed segments
             digest = await asyncio.to_thread(_sha256_file, part) if hash_enabled else None
-            return existing, digest
+            segments = await asyncio.to_thread(_segments_from_part, part, segment_size)
+            return existing, digest, segments
         resp.raise_for_status()
 
         # If we asked to resume but the server ignored Range (200, not 206),
@@ -177,13 +276,19 @@ async def _stream_to_part(
         if resume and hasher is not None:
             # Seed the hash with the bytes already on disk (one read of the partial).
             await asyncio.to_thread(_feed_file, hasher, part)
+        if resume:
+            # Seed segment hasher with already-downloaded bytes.
+            await asyncio.to_thread(_feed_segment_hasher, segment_hasher, part, existing)
         mode = "ab" if resume else "wb"
         with open(part, mode) as fh:
             async for block in resp.aiter_bytes(chunk):
                 fh.write(block)
                 if hasher is not None:
                     hasher.update(block)
-    return part.stat().st_size, (hasher.hexdigest() if hasher is not None else None)
+                segment_hasher.update(block)
+
+    final_size = part.stat().st_size
+    return final_size, (hasher.hexdigest() if hasher is not None else None), segment_hasher.finalize()
 
 
 async def _hash_present_file(ctx: _Ctx, rel: str, expected: int, target: Path) -> str:
@@ -217,12 +322,15 @@ async def download_one(ctx: _Ctx, item: dict) -> Result:
     async with ctx.sem:  # cap concurrent in-flight downloads (bandwidth/throughput knob)
         for attempt in range(1, ctx.max_retries + 2):  # 1 try + max_retries
             try:
-                got, digest = await _stream_to_part(
-                    ctx.client, url, part, expected, ctx.chunk, ctx.hash_enabled
+                got, digest, segments = await _stream_to_part(
+                    ctx.client, url, part, expected, ctx.chunk, ctx.hash_enabled, ctx.segment_size
                 )
                 if got != expected:
                     raise OSError(f"size mismatch: got {got:,}, expected {expected:,}")
                 part.replace(target)
+                # Write segment sidecar if segments were computed
+                if segments:
+                    _write_segment_sidecar(target, segments, expected, ctx.segment_size)
                 secs = time.monotonic() - started
                 ctx.counter["done_bytes"] += expected
                 mbps = (expected / 1e6 / secs) if secs > 0 else 0.0
@@ -232,7 +340,16 @@ async def download_one(ctx: _Ctx, item: dict) -> Result:
                     attempt, secs, mbps, digest or "-",
                 )
                 ctx.counter["done"] += 1
-                return Result(rel, "ok", expected, attempt, secs, sha256=digest or "")
+                return Result(
+                    rel,
+                    "ok",
+                    expected,
+                    attempt,
+                    secs,
+                    sha256=digest or "",
+                    segment_hashes=segments,
+                    segment_size=ctx.segment_size,
+                )
             except PermissionError as exc:  # auth failure - no point retrying
                 log.error("FAIL  %s - %s", rel, exc)
                 return Result(rel, "fail", part.stat().st_size if part.exists() else 0,
@@ -250,7 +367,18 @@ async def download_one(ctx: _Ctx, item: dict) -> Result:
     return Result(rel, "fail", 0, 0, 0.0, "logic error")
 
 
-_RESULT_COLUMNS = ["path", "status", "size_bytes", "attempts", "seconds", "sha256", "detail"]
+_RESULT_COLUMNS = [
+    "path",
+    "status",
+    "size_bytes",
+    "attempts",
+    "seconds",
+    "sha256",
+    "segment_count",
+    "segment_size_bytes",
+    "segment_hashes_path",
+    "detail",
+]
 _FLUSH_EVERY = 100    # checkpoint the results CSV every N completed files, and...
 _FLUSH_SECONDS = 30   # ...at least this often (so the slow big-file phase still persists)
 
@@ -284,7 +412,44 @@ def _prior_hashes(prior_rows: dict[str, list]) -> dict[tuple[str, int], str]:
 
 
 def _row_values(r: Result) -> list:
-    return [r.path, r.status, r.size, r.attempts, f"{r.seconds:.1f}", r.sha256, r.detail]
+    segment_count = len(r.segment_hashes) if r.segment_hashes else 0
+    segment_hashes_path = ""
+    if segment_count > 0:
+        segment_hashes_path = f"{r.path}.segments.json"
+    return [
+        r.path,
+        r.status,
+        r.size,
+        r.attempts,
+        f"{r.seconds:.1f}",
+        r.sha256,
+        segment_count,
+        r.segment_size if segment_count > 0 else "",
+        segment_hashes_path,
+        r.detail,
+    ]
+
+
+def _write_segment_sidecar(target: Path, segments: list[dict], file_size: int, segment_size: int) -> None:
+    """Write per-file segment metadata sidecar.
+
+    Writes `{target}.segments.json` with segment hashes and metadata.
+    Atomic: temp file + replace.
+    """
+    if not segments:
+        return  # No segments to write
+    sidecar_path = target.with_suffix(target.suffix + ".segments.json")
+    sidecar_data = {
+        "file_path": str(target),
+        "file_size_bytes": file_size,
+        "segment_size_bytes": segment_size,
+        "segment_count": len(segments),
+        "segments": segments,
+    }
+    tmp = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(sidecar_data, fh, indent=2)
+    tmp.replace(sidecar_path)
 
 
 def _write_results(results_path: Path, table: dict[str, list]) -> None:
@@ -301,8 +466,18 @@ def _write_results(results_path: Path, table: dict[str, list]) -> None:
 # --------------------------------------------------------------------------- #
 # Orchestration
 # --------------------------------------------------------------------------- #
-async def run(manifest: dict, dest: Path, concurrency: int, retries: int, chunk: int,
-              limit: int | None, results_path: Path, hash_enabled: bool, hash_workers: int) -> int:
+async def run(
+    manifest: dict,
+    dest: Path,
+    concurrency: int,
+    retries: int,
+    chunk: int,
+    limit: int | None,
+    results_path: Path,
+    hash_enabled: bool,
+    hash_workers: int,
+    segment_size: int,
+) -> int:
     web_url = manifest["root"]["webUrl"]
     host = urlparse(web_url).netloc
     files = [i for i in manifest["items"] if i["type"] == "file"]
@@ -332,9 +507,17 @@ async def run(manifest: dict, dest: Path, concurrency: int, retries: int, chunk:
         follow_redirects=True, headers={"User-Agent": "filecopy/0.1"},
     ) as client:
         ctx = _Ctx(
-            client=client, sem=asyncio.Semaphore(concurrency), web_url=web_url, dest=dest,
-            max_retries=retries, chunk=chunk, counter=counter, hash_enabled=hash_enabled,
-            hash_sem=asyncio.Semaphore(hash_workers), prior_hashes=prior_hashes,
+            client=client,
+            sem=asyncio.Semaphore(concurrency),
+            web_url=web_url,
+            dest=dest,
+            max_retries=retries,
+            chunk=chunk,
+            counter=counter,
+            hash_enabled=hash_enabled,
+            hash_sem=asyncio.Semaphore(hash_workers),
+            prior_hashes=prior_hashes,
+            segment_size=segment_size,
         )
         tasks = [asyncio.ensure_future(download_one(ctx, item)) for item in files]
         last_flush = time.monotonic()
@@ -400,6 +583,8 @@ def main() -> int:
                     help="skip SHA-256 hashing (no integrity fingerprint recorded)")
     ap.add_argument("--hash-workers", type=int, default=3,
                     help="concurrent on-disk hashing of already-present files (disk-bound; default 3)")
+    ap.add_argument("--segment-size-mb", type=float, default=1024.0,
+                    help="per-file segment size for corruption localization in MB (default 1024 = 1 GiB)")
     ap.add_argument("--log", default="filecopy.log", help="log file path (default filecopy.log)")
     ap.add_argument("--results", default="filecopy_results.csv",
                     help="per-file results CSV, incl. SHA-256 (default filecopy_results.csv)")
@@ -414,6 +599,7 @@ def main() -> int:
             manifest, dest, args.concurrency, args.retries,
             int(args.chunk_mb * 1024 * 1024), args.limit, Path(args.results),
             not args.no_hash, args.hash_workers,
+            int(args.segment_size_mb * 1024 * 1024),
         ))
     except KeyboardInterrupt:
         log.warning("Interrupted - partial .part files are kept; re-run to resume.")

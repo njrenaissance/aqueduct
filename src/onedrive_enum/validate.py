@@ -41,7 +41,16 @@ from collections import Counter
 from pathlib import Path
 
 _HASH_CHUNK = 4 * 1024 * 1024
-_COLUMNS = ["path", "status", "expected_bytes", "actual_bytes", "sha256", "hash_check"]
+_COLUMNS = [
+    "path",
+    "status",
+    "expected_bytes",
+    "actual_bytes",
+    "sha256",
+    "hash_check",
+    "segment_check",
+    "corrupted_segments",
+]
 
 
 def _sha256_file(path: Path) -> str:
@@ -68,9 +77,19 @@ def _load_reference(path: Path) -> dict[str, str]:
     return ref
 
 
-def _row(path, status, expected="", actual="", sha256="", hash_check="") -> dict:
-    return {"path": path, "status": status, "expected_bytes": expected,
-            "actual_bytes": actual, "sha256": sha256, "hash_check": hash_check}
+def _row(
+    path, status, expected="", actual="", sha256="", hash_check="", segment_check="", corrupted_segments=""
+) -> dict:
+    return {
+        "path": path,
+        "status": status,
+        "expected_bytes": expected,
+        "actual_bytes": actual,
+        "sha256": sha256,
+        "hash_check": hash_check,
+        "segment_check": segment_check,
+        "corrupted_segments": corrupted_segments,
+    }
 
 
 def _verify_hash(rel: str, target: Path, reference: dict[str, str]) -> tuple[str, str]:
@@ -83,6 +102,50 @@ def _verify_hash(rel: str, target: Path, reference: dict[str, str]) -> tuple[str
         return digest, "ok"
     print(f"HASH-MISMATCH  {rel}\n          recorded {want}\n          on disk  {digest}")
     return digest, "mismatch"
+
+
+def _load_segments(rel: str, dest: Path) -> dict[str, object] | None:
+    """Load segment metadata from sidecar JSON, if present."""
+    sidecar_path = (dest / rel).with_suffix((dest / rel).suffix + ".segments.json")
+    if not sidecar_path.exists():
+        return None
+    try:
+        with open(sidecar_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+            if isinstance(data, dict):
+                return data
+            return None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _verify_segments(rel: str, target: Path, segment_data: dict) -> tuple[str, str]:
+    """Verify segment hashes against sidecar. Returns (check_status, corrupted_segment_indices)."""
+    segment_size = segment_data["segment_size_bytes"]
+    segments = segment_data["segments"]
+    corrupted = []
+
+    with open(target, "rb") as fh:
+        for seg in segments:
+            offset = seg["offset_bytes"]
+            size = seg["size_bytes"]
+            expected_sha = seg["sha256"]
+
+            # Read segment bytes and compute SHA-256
+            fh.seek(offset)
+            data = fh.read(size)
+            actual_sha = hashlib.sha256(data).hexdigest()
+
+            if actual_sha != expected_sha:
+                corrupted.append(seg["segment_index"])
+
+    if corrupted:
+        print(
+            f"SEGMENT-MISMATCH  {rel}  corrupted segments: {corrupted}  "
+            f"(offset range: {corrupted[0] * segment_size} - {(corrupted[-1] + 1) * segment_size}B)"
+        )
+        return "mismatch", str(corrupted)
+    return "ok", ""
 
 
 def _check_file(item: dict, dest: Path, do_hash: bool, reference: dict[str, str]) -> dict:
@@ -99,7 +162,15 @@ def _check_file(item: dict, dest: Path, do_hash: bool, reference: dict[str, str]
         print(f"MISMATCH  {rel}  expected {expected:,} B, on disk {actual:,} B")
         return _row(rel, "mismatch", expected, actual)
     digest, hash_check = _verify_hash(rel, target, reference) if do_hash else ("", "")
-    return _row(rel, "ok", expected, actual, digest, hash_check)
+    # Check segments if sidecar is present
+    segment_check = ""
+    corrupted_segments = ""
+    segment_data = _load_segments(rel, dest)
+    if segment_data:
+        segment_check, corrupted_segments = _verify_segments(rel, target, segment_data)
+    return _row(
+        rel, "ok", expected, actual, digest, hash_check, segment_check, corrupted_segments
+    )
 
 
 def _scan_extras(dest: Path, manifest_paths: set[str]) -> list[dict]:
@@ -141,14 +212,17 @@ def validate(manifest: dict, dest: Path, do_hash: bool, results_path: Path,
 
     c = Counter(r["status"] for r in rows)
     hash_mismatch = sum(1 for r in rows if r["hash_check"] == "mismatch")
+    segment_mismatch = sum(1 for r in rows if r["segment_check"] == "mismatch")
     print("\n" + "-" * 60)
     summary = f"OK={c['ok']}  MISSING={c['missing']}  MISMATCH={c['mismatch']}  EXTRA={c['extra']}"
     if do_hash and reference:
         summary += f"  HASH-MISMATCH={hash_mismatch}"
+    if segment_mismatch:
+        summary += f"  SEGMENT-MISMATCH={segment_mismatch}"
     print(summary)
     print(f"Per-file results: {results_path}")
 
-    failed = c["missing"] + c["mismatch"] + c["extra"] + hash_mismatch
+    failed = c["missing"] + c["mismatch"] + c["extra"] + hash_mismatch + segment_mismatch
     if failed:
         print(f"RESULT: FAIL  ({failed} problem(s)) - re-run filecopy to fill/repair.")
     else:
