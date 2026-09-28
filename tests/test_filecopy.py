@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from onedrive_enum import filecopy
+from aqueduct import filecopy
 
 
 def test_download_url_uses_download_aspx_and_encodes_path():
