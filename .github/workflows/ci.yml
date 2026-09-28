@@ -56,7 +56,7 @@ jobs:
           fi
       - name: Start services
         if: steps.check-integration.outputs.has-integration == 'true'
-        run: docker-compose up -d
+        run: docker compose up -d
       - name: Run integration tests
         if: steps.check-integration.outputs.has-integration == 'true'
         run: uv run pytest -m integration
