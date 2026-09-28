@@ -483,7 +483,7 @@ def _write_results(results_path: Path, table: dict[str, list]) -> None:
 # --------------------------------------------------------------------------- #
 # Orchestration
 # --------------------------------------------------------------------------- #
-async def run(
+async def run(  # noqa: PLR0913, PLR0917
     manifest: dict,
     dest: Path,
     concurrency: int,
