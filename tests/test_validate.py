@@ -5,12 +5,31 @@ from __future__ import annotations
 
 import csv
 import hashlib
+from pathlib import Path
 
 from aqueduct import validate
 
 
 def _manifest(items):
     return {"items": items}
+
+
+def _read_csv_rows(path: Path) -> list[dict]:
+    """Read CSV file, skipping provenance comment lines (# prefix)."""
+    with open(path, encoding="utf-8-sig") as fh:
+        # Skip comment lines
+        for line in fh:
+            if not line.strip().startswith("#"):
+                # Found first non-comment line; parse as CSV
+                reader = csv.DictReader(fh)
+                # The line we found is part of the CSV header, so we need to
+                # handle it specially. Actually, better to reopen and use a filter.
+                break
+    # Reopen and filter comments
+    with open(path, encoding="utf-8-sig") as fh:
+        filtered = (line for line in fh if not line.strip().startswith("#"))
+        reader = csv.DictReader(filtered)
+        return list(reader)
 
 
 def test_validate_pass(tmp_path):
@@ -74,8 +93,7 @@ def test_validate_records_sha256_when_requested(tmp_path):
         reference={},
     )
     assert rc == 0
-    with open(results, encoding="utf-8-sig") as fh:
-        rows = list(csv.DictReader(fh))
+    rows = _read_csv_rows(results)
     assert rows[0]["sha256"] == hashlib.sha256(b"12345").hexdigest()
 
 

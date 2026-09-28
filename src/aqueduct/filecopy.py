@@ -54,7 +54,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
-from aqueduct import paths
+from aqueduct import metadata, paths
 
 _HASH_CHUNK = 4 * 1024 * 1024  # read size when hashing a file already on disk
 
@@ -469,10 +469,29 @@ def _write_segment_sidecar(target: Path, segments: list[dict], file_size: int, s
     tmp.replace(sidecar_path)
 
 
-def _write_results(results_path: Path, table: dict[str, list]) -> None:
-    """Atomically rewrite the results CSV (temp + replace), failures first then path."""
+def _write_results(
+    results_path: Path,
+    table: dict[str, list],
+    run_metadata: dict | None = None,
+) -> None:
+    """Atomically rewrite the results CSV (temp + replace), failures first then path.
+
+    If run_metadata is provided, prepends provenance comment lines matching webenum's
+    pattern (# prefix for CSV comment compatibility).
+    """
     tmp = results_path.with_suffix(results_path.suffix + ".tmp")
     with open(tmp, "w", newline="", encoding="utf-8-sig") as fh:
+        if run_metadata:
+            provenance = metadata.format_metadata_header(
+                tool=run_metadata.get("tool", "filecopy"),
+                version=run_metadata.get("tool_version", ""),
+                operator=run_metadata.get("operator", "unspecified"),
+                host_info=run_metadata.get("host_info", {}),
+                started_at_utc=run_metadata.get("started_at_utc", ""),
+                completed_at_utc=run_metadata.get("completed_at_utc", ""),
+            )
+            for line in provenance:
+                fh.write(line + "\r\n")
         w = csv.writer(fh)
         w.writerow(_RESULT_COLUMNS)
         for row in sorted(table.values(), key=lambda row: (row[1] != "fail", row[0])):
@@ -494,91 +513,98 @@ async def run(  # noqa: PLR0913, PLR0917
     hash_enabled: bool,
     hash_workers: int,
     segment_size: int,
+    operator_identity: str | None = None,
 ) -> int:
-    web_url = manifest["root"]["webUrl"]
-    host = urlparse(web_url).netloc
-    files = [i for i in manifest["items"] if i["type"] == "file"]
-    files.sort(key=lambda i: i["size"])  # smallest first: quick wins + fast smoke test
-    if limit:
-        files = files[:limit]
-    total_bytes = sum(i["size"] for i in files)
-    counter = {"total": len(files), "done": 0, "done_bytes": 0}
-    prior_rows = _load_prior_rows(results_path)
-    prior_hashes = _prior_hashes(prior_rows) if hash_enabled else {}
-    table: dict[str, list] = dict(prior_rows)
+    with metadata.timed_run("filecopy", operator_identity) as run_metadata:
+        web_url = manifest["root"]["webUrl"]
+        host = urlparse(web_url).netloc
+        files = [i for i in manifest["items"] if i["type"] == "file"]
+        files.sort(key=lambda i: i["size"])  # smallest first: quick wins + fast smoke test
+        if limit:
+            files = files[:limit]
+        total_bytes = sum(i["size"] for i in files)
+        counter = {"total": len(files), "done": 0, "done_bytes": 0}
+        prior_rows = _load_prior_rows(results_path)
+        prior_hashes = _prior_hashes(prior_rows) if hash_enabled else {}
+        table: dict[str, list] = dict(prior_rows)
 
-    log.info("Target host: %s", host)
-    log.info(
-        "Downloading %d files (%s bytes) -> %s  [concurrency=%d, retries=%d, hash=%s]",
-        len(files),
-        f"{total_bytes:,}",
-        dest,
-        concurrency,
-        retries,
-        f"sha256 (reusing {len(prior_hashes)} prior)" if hash_enabled else "off",
-    )
-
-    # Generous read timeout: it's the gap *between* chunks, not the whole file.
-    timeout = httpx.Timeout(connect=30.0, read=120.0, write=120.0, pool=None)
-    limits = httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency)
-    # Results are written incrementally (atomic temp+replace), checkpointed every
-    # _FLUSH_EVERY files and once more in `finally`, so an interruption keeps finished
-    # rows and their SHA-256s instead of losing the whole run's work.
-    results: list[Result] = []
-    async with httpx.AsyncClient(
-        cookies=_load_spo_cookies(),
-        timeout=timeout,
-        limits=limits,
-        follow_redirects=True,
-        headers={"User-Agent": "filecopy/0.1"},
-    ) as client:
-        ctx = _Ctx(
-            client=client,
-            sem=asyncio.Semaphore(concurrency),
-            web_url=web_url,
-            dest=dest,
-            max_retries=retries,
-            chunk=chunk,
-            counter=counter,
-            hash_enabled=hash_enabled,
-            hash_sem=asyncio.Semaphore(hash_workers),
-            prior_hashes=prior_hashes,
-            segment_size=segment_size,
+        log.info("Target host: %s", host)
+        log.info(
+            "Downloading %d files (%s bytes) -> %s  [concurrency=%d, retries=%d, hash=%s]",
+            len(files),
+            f"{total_bytes:,}",
+            dest,
+            concurrency,
+            retries,
+            f"sha256 (reusing {len(prior_hashes)} prior)" if hash_enabled else "off",
         )
-        tasks = [asyncio.ensure_future(download_one(ctx, item)) for item in files]
-        last_flush = time.monotonic()
-        try:
-            for done, fut in enumerate(asyncio.as_completed(tasks), 1):
-                r = await fut
-                results.append(r)
-                table[r.path] = _row_values(r)
-                now = time.monotonic()
-                if done % _FLUSH_EVERY == 0 or now - last_flush >= _FLUSH_SECONDS:
-                    _write_results(results_path, table)
-                    last_flush = now
-        finally:
-            _write_results(results_path, table)
 
-    ok = sum(r.status == "ok" for r in results)
-    skip = sum(r.status == "skip" for r in results)
-    fail = sum(r.status == "fail" for r in results)
-    hashed = sum(1 for r in results if r.sha256)
-    log.info("-" * 60)
-    log.info(
-        "DONE  ok=%d  skip=%d  fail=%d  hashed=%d  (%s of %s bytes new)",
-        ok,
-        skip,
-        fail,
-        hashed,
-        f"{counter['done_bytes']:,}",
-        f"{total_bytes:,}",
-    )
-    log.info("Per-file results: %s", results_path)
-    if fail:
-        log.error("RESULT: FAIL - %d file(s) did not download. Re-run to resume (completed files are skipped).", fail)
-    else:
-        log.info("RESULT: PASS - every targeted file is present at its manifest size.")
-    return 1 if fail else 0
+        # Generous read timeout: it's the gap *between* chunks, not the whole file.
+        timeout = httpx.Timeout(connect=30.0, read=120.0, write=120.0, pool=None)
+        limits = httpx.Limits(max_connections=concurrency, max_keepalive_connections=concurrency)
+        # Results are written incrementally (atomic temp+replace), checkpointed every
+        # _FLUSH_EVERY files and once more in `finally`, so an interruption keeps finished
+        # rows and their SHA-256s instead of losing the whole run's work.
+        results: list[Result] = []
+        async with httpx.AsyncClient(
+            cookies=_load_spo_cookies(),
+            timeout=timeout,
+            limits=limits,
+            follow_redirects=True,
+            headers={"User-Agent": "filecopy/0.1"},
+        ) as client:
+            ctx = _Ctx(
+                client=client,
+                sem=asyncio.Semaphore(concurrency),
+                web_url=web_url,
+                dest=dest,
+                max_retries=retries,
+                chunk=chunk,
+                counter=counter,
+                hash_enabled=hash_enabled,
+                hash_sem=asyncio.Semaphore(hash_workers),
+                prior_hashes=prior_hashes,
+                segment_size=segment_size,
+            )
+            tasks = [asyncio.ensure_future(download_one(ctx, item)) for item in files]
+            last_flush = time.monotonic()
+            try:
+                for done, fut in enumerate(asyncio.as_completed(tasks), 1):
+                    r = await fut
+                    results.append(r)
+                    table[r.path] = _row_values(r)
+                    now = time.monotonic()
+                    if done % _FLUSH_EVERY == 0 or now - last_flush >= _FLUSH_SECONDS:
+                        _write_results(results_path, table, run_metadata)
+                        last_flush = now
+            finally:
+                _write_results(results_path, table, run_metadata)
+
+        ok = sum(r.status == "ok" for r in results)
+        skip = sum(r.status == "skip" for r in results)
+        fail = sum(r.status == "fail" for r in results)
+        hashed = sum(1 for r in results if r.sha256)
+        log.info("-" * 60)
+        log.info(
+            "DONE  ok=%d  skip=%d  fail=%d  hashed=%d  (%s of %s bytes new)",
+            ok,
+            skip,
+            fail,
+            hashed,
+            f"{counter['done_bytes']:,}",
+            f"{total_bytes:,}",
+        )
+        log.info("Per-file results: %s", results_path)
+        if fail:
+            msg = f"RESULT: FAIL - {fail} file(s) did not download. Re-run to resume (completed files are skipped)."
+            log.error(msg)
+        else:
+            log.info("RESULT: PASS - every targeted file is present at its manifest size.")
+
+        # Write metadata sidecar
+        metadata.write_metadata_sidecar(results_path, run_metadata)
+
+        return 1 if fail else 0
 
 
 # --------------------------------------------------------------------------- #
@@ -635,6 +661,11 @@ def main() -> int:
         default="filecopy_results.csv",
         help="per-file results CSV, incl. SHA-256 (default filecopy_results.csv)",
     )
+    ap.add_argument(
+        "--operator",
+        default=None,
+        help="operator identity for acquisition record (email/username; opt-in to avoid PII; default: unspecified)",
+    )
     args = ap.parse_args()
 
     _setup_logging(Path(args.log))
@@ -654,6 +685,7 @@ def main() -> int:
                 not args.no_hash,
                 args.hash_workers,
                 int(args.segment_size_mb * 1024 * 1024),
+                args.operator,
             )
         )
     except KeyboardInterrupt:
