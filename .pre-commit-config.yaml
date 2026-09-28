@@ -24,15 +24,6 @@ repos:
         types: [python]
         pass_filenames: false
         stages: [pre-commit]
-{%- if cookiecutter.security == "yes" %}
-      - id: bandit
-        name: bandit -r src
-        entry: uv run bandit -r src
-        language: system
-        types: [python]
-        pass_filenames: false
-        stages: [pre-commit]
-{%- endif %}
       - id: pytest
         name: pytest
         entry: uv run pytest
