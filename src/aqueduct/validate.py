@@ -36,11 +36,14 @@ import argparse
 import csv
 import hashlib
 import json
+import logging
 import sys
 from collections import Counter
 from pathlib import Path
 
 from aqueduct import metadata
+
+log = logging.getLogger("validate")
 
 _HASH_CHUNK = 4 * 1024 * 1024
 _COLUMNS = [
@@ -102,7 +105,7 @@ def _verify_hash(rel: str, target: Path, reference: dict[str, str]) -> tuple[str
         return digest, ""
     if want == digest:
         return digest, "ok"
-    print(f"HASH-MISMATCH  {rel}\n          recorded {want}\n          on disk  {digest}")
+    log.warning(f"HASH-MISMATCH  {rel}\n          recorded {want}\n          on disk  {digest}")
     return digest, "mismatch"
 
 
@@ -115,6 +118,13 @@ def _load_segments(rel: str, dest: Path) -> dict[str, object] | None:
         with open(sidecar_path, encoding="utf-8") as fh:
             data = json.load(fh)
             if isinstance(data, dict):
+                # Verify file_size_bytes matches actual file
+                target = dest / rel
+                if target.exists():
+                    recorded_size = data.get("file_size_bytes")
+                    actual_size = target.stat().st_size
+                    if recorded_size != actual_size:
+                        log.warning(f"Sidecar mismatch for {rel}: recorded {recorded_size} B, actual {actual_size} B")
                 return data
             return None
     except (OSError, json.JSONDecodeError):
@@ -123,7 +133,6 @@ def _load_segments(rel: str, dest: Path) -> dict[str, object] | None:
 
 def _verify_segments(rel: str, target: Path, segment_data: dict) -> tuple[str, str]:
     """Verify segment hashes against sidecar. Returns (check_status, corrupted_segment_indices)."""
-    segment_size = segment_data["segment_size_bytes"]
     segments = segment_data["segments"]
     corrupted = []
 
@@ -142,9 +151,10 @@ def _verify_segments(rel: str, target: Path, segment_data: dict) -> tuple[str, s
                 corrupted.append(seg["segment_index"])
 
     if corrupted:
-        print(
-            f"SEGMENT-MISMATCH  {rel}  corrupted segments: {corrupted}  "
-            f"(offset range: {corrupted[0] * segment_size} - {(corrupted[-1] + 1) * segment_size}B)"
+        start_offset = segments[corrupted[0]]["offset_bytes"]
+        end_offset = segments[corrupted[-1]]["offset_bytes"] + segments[corrupted[-1]]["size_bytes"]
+        log.warning(
+            f"SEGMENT-MISMATCH  {rel}  corrupted segments: {corrupted}  (offset range: {start_offset} - {end_offset}B)"
         )
         return "mismatch", str(corrupted)
     return "ok", ""
@@ -174,14 +184,15 @@ def _check_file(item: dict, dest: Path, do_hash: bool, reference: dict[str, str]
 
 
 def _scan_extras(dest: Path, manifest_paths: set[str]) -> list[dict]:
-    """Files on disk the manifest never listed (in-flight .part files ignored)."""
+    """Files on disk the manifest never listed (in-flight .part files and segment sidecars ignored)."""
     extras: list[dict] = []
     if not dest.exists():
         return extras
     for p in dest.rglob("*"):
-        if p.is_file() and p.suffix != ".part":
+        if p.is_file() and p.suffix not in (".part", ".json"):
+            # Skip .part (in-flight downloads) and .segments.json (sidecar metadata)
             rp = str(p.relative_to(dest)).replace("\\", "/")
-            if rp not in manifest_paths:
+            if rp not in manifest_paths and not rp.endswith(".segments.json"):
                 print(f"EXTRA     {rp} (on disk, not in manifest)")
                 extras.append(_row(rp, "extra", actual=p.stat().st_size))
     return extras
