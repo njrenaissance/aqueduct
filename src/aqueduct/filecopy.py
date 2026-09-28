@@ -206,12 +206,12 @@ class Result:
         self, path, status, size, attempts, seconds, detail="", sha256="", segment_hashes=None, segment_size=0
     ):
         self.path = path
-        self.status = status      # "ok" | "skip" | "fail"
-        self.size = size          # bytes on disk at end
+        self.status = status  # "ok" | "skip" | "fail"
+        self.size = size  # bytes on disk at end
         self.attempts = attempts
         self.seconds = seconds
         self.detail = detail
-        self.sha256 = sha256      # SHA-256 (hex) of the final file, or "" if not hashed
+        self.sha256 = sha256  # SHA-256 (hex) of the final file, or "" if not hashed
         self.segment_hashes = segment_hashes or []  # list of segment dicts with sha256/offset/size
         self.segment_size = segment_size  # bytes per segment (e.g., 1 GiB)
 
@@ -221,16 +221,16 @@ class _Ctx:
     """Run-wide state shared by every download_one() task (keeps arg counts sane)."""
 
     client: httpx.AsyncClient
-    sem: asyncio.Semaphore            # caps concurrent downloads (network-bound)
+    sem: asyncio.Semaphore  # caps concurrent downloads (network-bound)
     web_url: str
     dest: Path
     max_retries: int
     chunk: int
     counter: dict
     hash_enabled: bool
-    hash_sem: asyncio.Semaphore                 # caps concurrent on-disk hashing (disk-bound)
-    prior_hashes: dict[tuple[str, int], str]    # (path, size) -> sha256 from a prior run
-    segment_size: int                           # bytes per segment (default 1 GiB)
+    hash_sem: asyncio.Semaphore  # caps concurrent on-disk hashing (disk-bound)
+    prior_hashes: dict[tuple[str, int], str]  # (path, size) -> sha256 from a prior run
+    segment_size: int  # bytes per segment (default 1 GiB)
 
 
 async def _stream_to_part(
@@ -336,8 +336,14 @@ async def download_one(ctx: _Ctx, item: dict) -> Result:
                 mbps = (expected / 1e6 / secs) if secs > 0 else 0.0
                 log.info(
                     "ok    [%d/%d] %s (%s B, try %d, %.1fs, %.1f MB/s) sha256=%s",
-                    ctx.counter["done"] + 1, ctx.counter["total"], rel, f"{expected:,}",
-                    attempt, secs, mbps, digest or "-",
+                    ctx.counter["done"] + 1,
+                    ctx.counter["total"],
+                    rel,
+                    f"{expected:,}",
+                    attempt,
+                    secs,
+                    mbps,
+                    digest or "-",
                 )
                 ctx.counter["done"] += 1
                 return Result(
@@ -352,16 +358,27 @@ async def download_one(ctx: _Ctx, item: dict) -> Result:
                 )
             except PermissionError as exc:  # auth failure - no point retrying
                 log.error("FAIL  %s - %s", rel, exc)
-                return Result(rel, "fail", part.stat().st_size if part.exists() else 0,
-                              attempt, time.monotonic() - started, str(exc))
+                return Result(
+                    rel,
+                    "fail",
+                    part.stat().st_size if part.exists() else 0,
+                    attempt,
+                    time.monotonic() - started,
+                    str(exc),
+                )
             except (TimeoutError, OSError, httpx.HTTPStatusError, httpx.TransportError) as exc:
                 if attempt >= ctx.max_retries + 1:
                     log.error("FAIL  %s - %s (after %d tries)", rel, exc, attempt)
-                    return Result(rel, "fail", part.stat().st_size if part.exists() else 0,
-                                  attempt, time.monotonic() - started, str(exc))
+                    return Result(
+                        rel,
+                        "fail",
+                        part.stat().st_size if part.exists() else 0,
+                        attempt,
+                        time.monotonic() - started,
+                        str(exc),
+                    )
                 backoff = min(2 ** (attempt - 1), 30)
-                log.warning("retry %s - %s (try %d/%d; %ds)", rel, exc,
-                            attempt, ctx.max_retries + 1, backoff)
+                log.warning("retry %s - %s (try %d/%d; %ds)", rel, exc, attempt, ctx.max_retries + 1, backoff)
                 await asyncio.sleep(backoff)
     # unreachable
     return Result(rel, "fail", 0, 0, 0.0, "logic error")
@@ -379,8 +396,8 @@ _RESULT_COLUMNS = [
     "segment_hashes_path",
     "detail",
 ]
-_FLUSH_EVERY = 100    # checkpoint the results CSV every N completed files, and...
-_FLUSH_SECONDS = 30   # ...at least this often (so the slow big-file phase still persists)
+_FLUSH_EVERY = 100  # checkpoint the results CSV every N completed files, and...
+_FLUSH_SECONDS = 30  # ...at least this often (so the slow big-file phase still persists)
 
 
 def _load_prior_rows(results_path: Path) -> dict[str, list]:
@@ -491,9 +508,15 @@ async def run(
     table: dict[str, list] = dict(prior_rows)
 
     log.info("Target host: %s", host)
-    log.info("Downloading %d files (%s bytes) -> %s  [concurrency=%d, retries=%d, hash=%s]",
-             len(files), f"{total_bytes:,}", dest, concurrency, retries,
-             f"sha256 (reusing {len(prior_hashes)} prior)" if hash_enabled else "off")
+    log.info(
+        "Downloading %d files (%s bytes) -> %s  [concurrency=%d, retries=%d, hash=%s]",
+        len(files),
+        f"{total_bytes:,}",
+        dest,
+        concurrency,
+        retries,
+        f"sha256 (reusing {len(prior_hashes)} prior)" if hash_enabled else "off",
+    )
 
     # Generous read timeout: it's the gap *between* chunks, not the whole file.
     timeout = httpx.Timeout(connect=30.0, read=120.0, write=120.0, pool=None)
@@ -503,8 +526,11 @@ async def run(
     # rows and their SHA-256s instead of losing the whole run's work.
     results: list[Result] = []
     async with httpx.AsyncClient(
-        cookies=_load_spo_cookies(), timeout=timeout, limits=limits,
-        follow_redirects=True, headers={"User-Agent": "filecopy/0.1"},
+        cookies=_load_spo_cookies(),
+        timeout=timeout,
+        limits=limits,
+        follow_redirects=True,
+        headers={"User-Agent": "filecopy/0.1"},
     ) as client:
         ctx = _Ctx(
             client=client,
@@ -538,12 +564,18 @@ async def run(
     fail = sum(r.status == "fail" for r in results)
     hashed = sum(1 for r in results if r.sha256)
     log.info("-" * 60)
-    log.info("DONE  ok=%d  skip=%d  fail=%d  hashed=%d  (%s of %s bytes new)",
-             ok, skip, fail, hashed, f"{counter['done_bytes']:,}", f"{total_bytes:,}")
+    log.info(
+        "DONE  ok=%d  skip=%d  fail=%d  hashed=%d  (%s of %s bytes new)",
+        ok,
+        skip,
+        fail,
+        hashed,
+        f"{counter['done_bytes']:,}",
+        f"{total_bytes:,}",
+    )
     log.info("Per-file results: %s", results_path)
     if fail:
-        log.error("RESULT: FAIL - %d file(s) did not download. Re-run to resume "
-                  "(completed files are skipped).", fail)
+        log.error("RESULT: FAIL - %d file(s) did not download. Re-run to resume (completed files are skipped).", fail)
     else:
         log.info("RESULT: PASS - every targeted file is present at its manifest size.")
     return 1 if fail else 0
@@ -572,22 +604,37 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="High-throughput resumable downloader for a web-only share.")
     ap.add_argument("-m", "--manifest", default="manifest.json")
     ap.add_argument("-d", "--dest", default="download")
-    ap.add_argument("-c", "--concurrency", type=int, default=4,
-                    help="max simultaneous downloads (Semaphore); the throughput/bandwidth knob (default 4)")
-    ap.add_argument("--retries", type=int, default=2,
-                    help="retries after the first attempt (default 2 => 3 tries total)")
+    ap.add_argument(
+        "-c",
+        "--concurrency",
+        type=int,
+        default=4,
+        help="max simultaneous downloads (Semaphore); the throughput/bandwidth knob (default 4)",
+    )
+    ap.add_argument(
+        "--retries", type=int, default=2, help="retries after the first attempt (default 2 => 3 tries total)"
+    )
     ap.add_argument("--chunk-mb", type=float, default=4.0, help="stream chunk size in MB (default 4)")
-    ap.add_argument("--limit", type=int, default=None,
-                    help="only the N smallest files (smoke test)")
-    ap.add_argument("--no-hash", action="store_true",
-                    help="skip SHA-256 hashing (no integrity fingerprint recorded)")
-    ap.add_argument("--hash-workers", type=int, default=3,
-                    help="concurrent on-disk hashing of already-present files (disk-bound; default 3)")
-    ap.add_argument("--segment-size-mb", type=float, default=1024.0,
-                    help="per-file segment size for corruption localization in MB (default 1024 = 1 GiB)")
+    ap.add_argument("--limit", type=int, default=None, help="only the N smallest files (smoke test)")
+    ap.add_argument("--no-hash", action="store_true", help="skip SHA-256 hashing (no integrity fingerprint recorded)")
+    ap.add_argument(
+        "--hash-workers",
+        type=int,
+        default=3,
+        help="concurrent on-disk hashing of already-present files (disk-bound; default 3)",
+    )
+    ap.add_argument(
+        "--segment-size-mb",
+        type=float,
+        default=1024.0,
+        help="per-file segment size for corruption localization in MB (default 1024 = 1 GiB)",
+    )
     ap.add_argument("--log", default="filecopy.log", help="log file path (default filecopy.log)")
-    ap.add_argument("--results", default="filecopy_results.csv",
-                    help="per-file results CSV, incl. SHA-256 (default filecopy_results.csv)")
+    ap.add_argument(
+        "--results",
+        default="filecopy_results.csv",
+        help="per-file results CSV, incl. SHA-256 (default filecopy_results.csv)",
+    )
     args = ap.parse_args()
 
     _setup_logging(Path(args.log))
@@ -595,12 +642,20 @@ def main() -> int:
     dest = Path(args.dest)
     dest.mkdir(parents=True, exist_ok=True)
     try:
-        return asyncio.run(run(
-            manifest, dest, args.concurrency, args.retries,
-            int(args.chunk_mb * 1024 * 1024), args.limit, Path(args.results),
-            not args.no_hash, args.hash_workers,
-            int(args.segment_size_mb * 1024 * 1024),
-        ))
+        return asyncio.run(
+            run(
+                manifest,
+                dest,
+                args.concurrency,
+                args.retries,
+                int(args.chunk_mb * 1024 * 1024),
+                args.limit,
+                Path(args.results),
+                not args.no_hash,
+                args.hash_workers,
+                int(args.segment_size_mb * 1024 * 1024),
+            )
+        )
     except KeyboardInterrupt:
         log.warning("Interrupted - partial .part files are kept; re-run to resume.")
         return 130

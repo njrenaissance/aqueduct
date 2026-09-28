@@ -168,9 +168,7 @@ def _check_file(item: dict, dest: Path, do_hash: bool, reference: dict[str, str]
     segment_data = _load_segments(rel, dest)
     if segment_data:
         segment_check, corrupted_segments = _verify_segments(rel, target, segment_data)
-    return _row(
-        rel, "ok", expected, actual, digest, hash_check, segment_check, corrupted_segments
-    )
+    return _row(rel, "ok", expected, actual, digest, hash_check, segment_check, corrupted_segments)
 
 
 def _scan_extras(dest: Path, manifest_paths: set[str]) -> list[dict]:
@@ -187,8 +185,7 @@ def _scan_extras(dest: Path, manifest_paths: set[str]) -> list[dict]:
     return extras
 
 
-def validate(manifest: dict, dest: Path, do_hash: bool, results_path: Path,
-             reference: dict[str, str]) -> int:
+def validate(manifest: dict, dest: Path, do_hash: bool, results_path: Path, reference: dict[str, str]) -> int:
     files = [i for i in manifest["items"] if i["type"] == "file"]
     manifest_paths = {i["path"].replace("\\", "/") for i in files}
 
@@ -235,13 +232,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Validate a download against the manifest.")
     ap.add_argument("-m", "--manifest", default="manifest.json")
     ap.add_argument("-d", "--dest", default="download")
-    ap.add_argument("--hash", action="store_true",
-                    help="also compute each file's SHA-256 (reads all bytes; slow)")
-    ap.add_argument("--verify-against", default="filecopy_results.csv",
-                    help="CSV of recorded SHA-256s to verify against (default filecopy_results.csv; "
-                         "skipped if absent)")
-    ap.add_argument("--results", default="validate_results.csv",
-                    help="per-file results CSV (default validate_results.csv)")
+    ap.add_argument("--hash", action="store_true", help="also compute each file's SHA-256 (reads all bytes; slow)")
+    ap.add_argument(
+        "--verify-against",
+        default="filecopy_results.csv",
+        help="CSV of recorded SHA-256s to verify against (default filecopy_results.csv; skipped if absent)",
+    )
+    ap.add_argument(
+        "--results", default="validate_results.csv", help="per-file results CSV (default validate_results.csv)"
+    )
     args = ap.parse_args()
 
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))

@@ -181,10 +181,7 @@ def _render_base(ctx: dict) -> str:
     """Endpoint carrying only @a1 (the list identity). RootFolder and paging
     params are added per-request: from us on page 1, from NextHref after that."""
     a1 = quote(f"'{ctx['docs_decoded']}'", safe="")
-    return (
-        f"{ctx['web_url']}/_api/web/GetListUsingPath(DecodedUrl=@a1)"
-        f"/RenderListDataAsStream?@a1={a1}"
-    )
+    return f"{ctx['web_url']}/_api/web/GetListUsingPath(DecodedUrl=@a1)/RenderListDataAsStream?@a1={a1}"
 
 
 def _fetch_all_rows(page, ctx: dict, raw_dir: Path, row_limit: int) -> list[dict]:
@@ -211,9 +208,7 @@ def _fetch_all_rows(page, ctx: dict, raw_dir: Path, row_limit: int) -> list[dict
         if not resp.ok:
             raise RuntimeError(f"RenderListDataAsStream failed: {resp.status} {resp.text()[:300]}")
         data = resp.json()
-        (raw_dir / f"page_{page_idx:04d}.json").write_text(
-            json.dumps(data, indent=2), encoding="utf-8"
-        )
+        (raw_dir / f"page_{page_idx:04d}.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
         # With RenderOptions=2 the payload IS the ListData object (rows at the
         # top level); with a richer bitmask it is nested under "ListData".
         ld = data.get("ListData", data)
@@ -234,7 +229,7 @@ def _created_iso(raw: str | None):
 
 def _row_to_item(row: dict, folder_prefix: str, origin: str) -> dict:
     file_ref = row.get("FileRef", "")
-    rel = file_ref[len(folder_prefix):] if file_ref.startswith(folder_prefix) else file_ref
+    rel = file_ref[len(folder_prefix) :] if file_ref.startswith(folder_prefix) else file_ref
     is_folder = row.get("FSObjType") == "1"
     size_str = row.get("File_x0020_Size") or ("" if is_folder else "0")
     rec = {
@@ -328,10 +323,7 @@ def enumerate_share(share_url: str, out_path: Path, row_limit: int) -> int:
     out_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     csv_path = out_path.with_suffix(".csv")
     write_csv(manifest, csv_path)
-    print(
-        f"\nWrote {out_path}: {counts['files']} files, {counts['folders']} folders, "
-        f"{counts['total_bytes']:,} bytes."
-    )
+    print(f"\nWrote {out_path}: {counts['files']} files, {counts['folders']} folders, {counts['total_bytes']:,} bytes.")
     print(f"Wrote {csv_path} ({len(items)} rows).")
     print("NOTE: this source exposes no per-file hash; verify will be size-only.")
     return 0
@@ -341,16 +333,16 @@ def enumerate_share(share_url: str, out_path: Path, row_limit: int) -> int:
 # CSV export (path + size at minimum, plus useful evidence columns)
 # --------------------------------------------------------------------------- #
 _CSV_COLUMNS = [
-    "path",          # complete path within the share (all folders)
+    "path",  # complete path within the share (all folders)
     "size_bytes",
-    "type",          # file | folder
+    "type",  # file | folder
     "modified_utc",
     "created",
-    "version",       # SharePoint _UIVersionString (version token in lieu of eTag)
+    "version",  # SharePoint _UIVersionString (version token in lieu of eTag)
     "unique_id",
     "guid",
     "web_url",
-    "full_path",     # server-relative FileRef (absolute within the site)
+    "full_path",  # server-relative FileRef (absolute within the site)
 ]
 
 
@@ -364,10 +356,8 @@ def _provenance_lines(manifest: dict) -> list[str]:
         f"# share_url: {manifest.get('share_url', '')}",
         f"# enumerated_at_utc: {manifest.get('enumerated_at_utc', '')}",
         f"# enumerated_by: {manifest.get('enumerated_by', '')}",
-        f"# tool: {manifest.get('tool', '')} {manifest.get('tool_version', '')}"
-        f"  source: {manifest.get('source', '')}",
-        f"# counts: {c.get('files', '?')} files, {c.get('folders', '?')} folders,"
-        f" {c.get('total_bytes', '?')} bytes",
+        f"# tool: {manifest.get('tool', '')} {manifest.get('tool_version', '')}  source: {manifest.get('source', '')}",
+        f"# counts: {c.get('files', '?')} files, {c.get('folders', '?')} folders, {c.get('total_bytes', '?')} bytes",
     ]
 
 
@@ -379,18 +369,20 @@ def write_csv(manifest: dict, csv_path: Path) -> int:
         w = csv.writer(fh)
         w.writerow(_CSV_COLUMNS)
         for it in manifest["items"]:
-            w.writerow([
-                it["path"],
-                it["size"],
-                it["type"],
-                it.get("modified"),
-                it.get("created"),
-                it.get("version"),
-                it.get("id"),
-                it.get("guid"),
-                it.get("webUrl"),
-                it.get("fileRef"),
-            ])
+            w.writerow(
+                [
+                    it["path"],
+                    it["size"],
+                    it["type"],
+                    it.get("modified"),
+                    it.get("created"),
+                    it.get("version"),
+                    it.get("id"),
+                    it.get("guid"),
+                    it.get("webUrl"),
+                    it.get("fileRef"),
+                ]
+            )
     return len(manifest["items"])
 
 
