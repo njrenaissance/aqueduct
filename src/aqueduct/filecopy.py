@@ -119,6 +119,8 @@ class _SegmentHasher:
     """Track segment boundaries and compute per-segment SHA-256 digests during streaming."""
 
     def __init__(self, segment_size: int):
+        if segment_size <= 0:
+            raise ValueError(f"segment_size must be positive, got {segment_size}")
         self.segment_size = segment_size
         self.segments: list[dict] = []
         self.current_segment_hash: hashlib._Hash = hashlib.sha256()
@@ -310,6 +312,8 @@ async def download_one(ctx: _Ctx, item: dict) -> Result:
     target.parent.mkdir(parents=True, exist_ok=True)
 
     # Already have a complete copy? (resume across runs) — reuse/compute its hash.
+    # Note: No segment sidecars are created for skipped files; segment corruption
+    # detection only applies to files downloaded by this run.
     if target.exists() and target.stat().st_size == expected:
         sha = await _hash_present_file(ctx, rel, expected, target)
         log.info("skip  %s (have %s B) sha256=%s", rel, f"{expected:,}", sha or "-")

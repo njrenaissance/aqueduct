@@ -124,3 +124,159 @@ def test_validate_flags_hash_mismatch(tmp_path):
         reference={"a.txt": "0" * 64},
     )
     assert rc == 1  # content drift from the recorded fingerprint is a failure
+
+
+def test_validate_loads_segment_sidecar(tmp_path):
+    """Verify sidecar JSON is loaded correctly with expected fields."""
+    dest = tmp_path / "dl"
+    dest.mkdir()
+
+    # Create test file
+    file_data = b"12345" * 100  # 500 bytes
+    (dest / "file.bin").write_bytes(file_data)
+
+    # Create segment sidecar
+    seg0_hash = hashlib.sha256(file_data[:256]).hexdigest()
+    seg1_hash = hashlib.sha256(file_data[256:]).hexdigest()
+    sidecar = {
+        "file_path": str(dest / "file.bin"),
+        "file_size_bytes": len(file_data),
+        "segment_size_bytes": 256,
+        "segment_count": 2,
+        "segments": [
+            {
+                "segment_index": 0,
+                "offset_bytes": 0,
+                "size_bytes": 256,
+                "sha256": seg0_hash,
+            },
+            {
+                "segment_index": 1,
+                "offset_bytes": 256,
+                "size_bytes": 244,
+                "sha256": seg1_hash,
+            },
+        ],
+    }
+    sidecar_path = dest / "file.bin.segments.json"
+    sidecar_path.write_text(__import__("json").dumps(sidecar))
+
+    # Validate should load and use the sidecar
+    rc = validate.validate(
+        _manifest([{"path": "file.bin", "type": "file", "size": len(file_data)}]),
+        dest,
+        do_hash=False,
+        results_path=tmp_path / "r.csv",
+        reference={},
+    )
+    assert rc == 0
+    rows = _read_csv_rows(tmp_path / "r.csv")
+    assert rows[0]["segment_check"] == "ok"
+
+
+def test_validate_detects_segment_corruption(tmp_path):
+    """Verify segment corruption is detected and reported accurately."""
+    dest = tmp_path / "dl"
+    dest.mkdir()
+
+    # Create test file
+    file_data = b"A" * 100 + b"B" * 100 + b"C" * 100  # 300 bytes, 3 segments
+    file_path = dest / "file.bin"
+    file_path.write_bytes(file_data)
+
+    # Create segment sidecar with correct hashes
+    segments = [
+        {"segment_index": 0, "offset_bytes": 0, "size_bytes": 100, "sha256": hashlib.sha256(b"A" * 100).hexdigest()},
+        {"segment_index": 1, "offset_bytes": 100, "size_bytes": 100, "sha256": hashlib.sha256(b"B" * 100).hexdigest()},
+        {"segment_index": 2, "offset_bytes": 200, "size_bytes": 100, "sha256": hashlib.sha256(b"C" * 100).hexdigest()},
+    ]
+    sidecar = {
+        "file_path": str(file_path),
+        "file_size_bytes": 300,
+        "segment_size_bytes": 100,
+        "segment_count": 3,
+        "segments": segments,
+    }
+    (dest / "file.bin.segments.json").write_text(__import__("json").dumps(sidecar))
+
+    # Corrupt segment 1
+    corrupted_data = b"A" * 100 + b"X" * 100 + b"C" * 100
+    file_path.write_bytes(corrupted_data)
+
+    # Validate should detect corruption
+    rc = validate.validate(
+        _manifest([{"path": "file.bin", "type": "file", "size": 300}]),
+        dest,
+        do_hash=False,
+        results_path=tmp_path / "r.csv",
+        reference={},
+    )
+    assert rc == 1  # Failure due to segment mismatch
+    rows = _read_csv_rows(tmp_path / "r.csv")
+    assert rows[0]["segment_check"] == "mismatch"
+    assert "1" in rows[0]["corrupted_segments"]
+
+
+def test_validate_warns_on_truncated_file(tmp_path):
+    """Verify warning is logged when file size mismatches sidecar metadata."""
+    dest = tmp_path / "dl"
+    dest.mkdir()
+
+    # Create test file with 100 bytes
+    file_path = dest / "file.bin"
+    file_path.write_bytes(b"A" * 100)
+
+    # Create sidecar claiming 200 bytes (simulate truncation after download)
+    sidecar = {
+        "file_path": str(file_path),
+        "file_size_bytes": 200,
+        "segment_size_bytes": 100,
+        "segment_count": 2,
+        "segments": [
+            {"segment_index": 0, "offset_bytes": 0, "size_bytes": 100, "sha256": "a" * 64},
+            {"segment_index": 1, "offset_bytes": 100, "size_bytes": 100, "sha256": "b" * 64},
+        ],
+    }
+    (dest / "file.bin.segments.json").write_text(__import__("json").dumps(sidecar))
+
+    # Size check should fail first (actual 100, expected 200)
+    rc = validate.validate(
+        _manifest([{"path": "file.bin", "type": "file", "size": 200}]),
+        dest,
+        do_hash=False,
+        results_path=tmp_path / "r.csv",
+        reference={},
+    )
+    assert rc == 1  # Mismatch: 100 on disk, 200 expected
+
+
+def test_validate_handles_empty_file_with_segments(tmp_path):
+    """Verify zero-byte files validate correctly even with segment metadata."""
+    dest = tmp_path / "dl"
+    dest.mkdir()
+
+    # Create empty file
+    file_path = dest / "empty.bin"
+    file_path.write_bytes(b"")
+
+    # Create sidecar for empty file (no segments)
+    sidecar = {
+        "file_path": str(file_path),
+        "file_size_bytes": 0,
+        "segment_size_bytes": 1024,
+        "segment_count": 0,
+        "segments": [],
+    }
+    (dest / "empty.bin.segments.json").write_text(__import__("json").dumps(sidecar))
+
+    rc = validate.validate(
+        _manifest([{"path": "empty.bin", "type": "file", "size": 0}]),
+        dest,
+        do_hash=False,
+        results_path=tmp_path / "r.csv",
+        reference={},
+    )
+    assert rc == 0  # Success
+    rows = _read_csv_rows(tmp_path / "r.csv")
+    assert rows[0]["status"] == "ok"
+    assert rows[0]["actual_bytes"] == "0"
