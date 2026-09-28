@@ -7,3 +7,9 @@ env/
 
 # Environment variables
 .env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
