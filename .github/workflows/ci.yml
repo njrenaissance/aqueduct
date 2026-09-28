@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: pyproject.toml
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  type-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: pyproject.toml
+      - run: uv run mypy src
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: pyproject.toml
+      - run: uv run pytest -m "not integration"
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: pyproject.toml
+      - name: Check for integration tests
+        id: check-integration
+        run: |
+          if uv run pytest --collect-only -m integration 2>&1 | grep -q "selected"; then
+            echo "has-integration=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-integration=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Start services
+        if: steps.check-integration.outputs.has-integration == 'true'
+        run: docker-compose up -d
+      - name: Run integration tests
+        if: steps.check-integration.outputs.has-integration == 'true'
+        run: uv run pytest -m integration
