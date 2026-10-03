@@ -135,6 +135,48 @@ If anything fails, re-run `filecopy` to fill the gaps, then validate again.
 
 ---
 
+## Step 5 — (Optional) Upload to SharePoint
+
+> **This bypasses the Azure Blob vault.** The SharePoint copy is a convenience/review
+> copy, **not evidence** — the command warns, and records the bypass in its results.
+> See [ADR-0012](adr/0012-DIRECT-GRAPH-UPLOAD-TO-SHAREPOINT.md).
+
+Use this only if you have Microsoft Graph access to **your own** destination site.
+One-time setup: register an app in the destination tenant, grant it the
+`Sites.Selected` permission (with admin consent), and grant it write access to the one
+target site. Then save its details in `~/.aqueduct/graph.json` (fictional values):
+
+```json
+{ "tenant_id": "00000000-0000-0000-0000-000000000000", "client_id": "11111111-1111-1111-1111-111111111111" }
+```
+
+Put the client secret in the `AQUEDUCT_GRAPH_CLIENT_SECRET` environment variable (or a
+`client_secret` field in that file). Never commit it or paste it into logs.
+
+Run it after `validate --hash` has passed, naming the **site, document library, and
+folder** — either as one pasted folder URL, or as separate options:
+
+```bash
+uv run spupload --dest-url "https://contoso.sharepoint.com/sites/Review/Shared%20Documents/Case%2012"
+uv run spupload --site-url https://contoso.sharepoint.com/sites/Review --library Discovery --target-folder "Case 12"
+```
+
+What it does:
+
+- Uploads only files that passed `validate --hash`. Each file is re-hashed first, and a
+  file that changed since `validate` is **rejected**, not uploaded.
+- Recreates the manifest's folder structure under the target; large files use resumable
+  upload sessions.
+- Verifies each file against SharePoint (size and `quickXorHash`). A file SharePoint
+  reports no hash for is accepted on size alone and marked **size-only** — re-check those.
+- Safe to re-run: files already there with a matching hash are skipped; a mismatching
+  one is replaced.
+- Writes `spupload_results.csv` (and a `.metadata.json` sidecar) — a `rejected` or
+  `fail` row makes the run exit non-zero. Skip tenant-blocked types with
+  `--blocked-ext .exe,.dll`.
+
+---
+
 ## What you keep as evidence
 
 From the case data folder:
@@ -143,6 +185,8 @@ From the case data folder:
 - `download/` — the files themselves.
 - `filecopy_results.csv` and `validate_results.csv` — proof of what was retrieved and
   that it matches the record.
+- `spupload_results.csv` — only if you used Step 5; it records a **non-evidentiary**
+  review copy, not preservation.
 
 ## Troubleshooting
 

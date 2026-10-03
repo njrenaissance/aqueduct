@@ -188,6 +188,15 @@ Sync hygiene:
 - Reviewer permissions are **read-only**; a retention label marks the library a
   record. The Blob remains the immutable authority regardless.
 
+**Direct-upload shortcut (`spupload`, [ADR-0012](adr/0012-DIRECT-GRAPH-UPLOAD-TO-SHAREPOINT.md)).**
+An operator with Graph access to their own destination site can upload the validated
+local download straight to a SharePoint library, **bypassing the vault**. This is a
+deliberate, non-evidentiary shortcut — a convenience/review copy only. The command warns,
+and its results CSV and sidecar record that the vault was bypassed. It is a standalone
+tool, not Stage 4: it does not feed or replace the Blob → SharePoint sync above, and it
+writes no ledger records. Verification is size plus SharePoint's `quickXorHash` (the only
+hash SharePoint reports), with our SHA-256 recorded alongside.
+
 ## 8. Completeness reconciliation (deterministic checklist)
 
 Because every item — searchable file and stub alike — carries uniform metadata, the
@@ -247,6 +256,8 @@ on a server.
 - **Stage 1 exists**: `login` → `webenum` (dated manifest) → `filecopy` (download +
   inline SHA-256 in `filecopy_results.csv`) → `validate` (size/completeness). This
   is the collection tier and the seed of the ledger.
+- **`spupload` exists** as an optional, vault-bypassing direct upload of the validated
+  download to SharePoint (see §7 and ADR-0012); it is not part of the pipeline stages.
 - **Stages 2–4 are new components** to build against this spec: Blob uploader +
   verifier, classifier/router, SharePoint sync, and the ledger database that ties
   them together.
