@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 
 import pytest
+
 from aqueduct.quickxorhash import DIGEST_SIZE, QuickXorHash, hash_file
 
 pytestmark = pytest.mark.unit

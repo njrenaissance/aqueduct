@@ -12,10 +12,10 @@ from urllib.parse import parse_qs
 
 import httpx
 import pytest
-from aqueduct.errors import AuthError, GraphError, UploadError
-from aqueduct.graphclient import FolderRef, GraphClient
 
 from aqueduct import graphclient as gc
+from aqueduct.errors import AuthError, GraphError, UploadError
+from aqueduct.graphclient import FolderRef, GraphClient
 
 pytestmark = pytest.mark.unit
 
