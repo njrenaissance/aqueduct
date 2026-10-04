@@ -1,0 +1,613 @@
+"""Tests for the Azure Blob upload (Stage 2, Preserve): validated local download -> immutable vault.
+
+The Azure SDK boundary is replaced by an in-memory fake container, so nothing touches the network (ADR-0013).
+"""
+
+from __future__ import annotations
+
+import base64
+import csv
+import hashlib
+import json
+import logging
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from azure.core.exceptions import ResourceNotFoundError, ServiceRequestError
+
+from aqueduct import blobupload as bu
+from aqueduct.errors import ConfigError
+from aqueduct.validated import UploadEntry
+
+pytestmark = pytest.mark.unit
+
+_PREFIX = "2026-0042-smith/20261004-share-a"
+_ACCOUNT = "https://contoso.blob.core.windows.net"
+_CHUNK = 4
+
+
+def _sha(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _md5(payload: bytes) -> bytes:
+    return hashlib.md5(payload, usedforsecurity=False).digest()
+
+
+class FakeBlob:
+    """One blob client against a FakeContainer: records calls, stores committed bytes."""
+
+    def __init__(self, container: FakeContainer, name: str) -> None:
+        self.container = container
+        self.name = name
+
+    def get_blob_properties(self) -> SimpleNamespace:
+        stored = self.container.blobs.get(self.name)
+        if stored is None:
+            raise ResourceNotFoundError("BlobNotFound")
+        return SimpleNamespace(
+            size=stored.size, metadata=stored.metadata, content_settings=SimpleNamespace(content_md5=stored.md5)
+        )
+
+    def stage_block(self, block_id: str, data: bytes, validate_content: bool = False) -> None:
+        if self.container.stage_failures:
+            self.container.stage_failures -= 1
+            raise ServiceRequestError("transient")
+        self.container.staged_calls.append((self.name, block_id, data, validate_content))
+        self.container.pending.setdefault(self.name, {})[block_id] = data
+
+    def commit_block_list(self, blocks: list, content_settings=None, metadata=None) -> None:
+        data = b"".join(self.container.pending.get(self.name, {})[b.id] for b in blocks)
+        md5 = bytearray(content_settings.content_md5) if content_settings else None
+        record = SimpleNamespace(data=data, size=len(data), metadata=dict(metadata or {}), md5=md5)
+        if self.container.tamper:
+            self.container.tamper(record)
+        self.container.blobs[self.name] = record
+        self.container.commits.append(self.name)
+
+
+class FakeContainer:
+    def __init__(self) -> None:
+        self.blobs: dict[str, SimpleNamespace] = {}
+        self.pending: dict[str, dict[str, bytes]] = {}
+        self.staged_calls: list[tuple] = []
+        self.commits: list[str] = []
+        self.stage_failures = 0
+        self.tamper = None
+
+    def get_blob_client(self, name: str) -> FakeBlob:
+        return FakeBlob(self, name)
+
+    def seed(self, name: str, payload: bytes, *, sha256: str | None = None) -> None:
+        self.blobs[name] = SimpleNamespace(
+            data=payload,
+            size=len(payload),
+            metadata={"sha256": sha256 or _sha(payload)},
+            md5=bytearray(_md5(payload)),
+        )
+
+
+def _ctx(container: FakeContainer, retries: int = 1, chunk: int = _CHUNK) -> bu.Ctx:
+    return bu.Ctx(container=container, prefix=_PREFIX, chunk=chunk, max_retries=retries)
+
+
+def _entry(path: str, payload: bytes, item_id: str = "guid-1") -> UploadEntry:
+    return UploadEntry.from_manifest_path(path, len(payload), _sha(payload), item_id)
+
+
+def _source(tmp_path: Path, entry: UploadEntry, payload: bytes) -> Path:
+    target = entry.local_path(tmp_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(payload)
+    return target
+
+
+@pytest.fixture(autouse=True)
+def _no_sleep(mocker) -> None:
+    mocker.patch("aqueduct.blobupload.time.sleep")
+
+
+# --- naming and configuration ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param("m/c", "m/c", id="plain"),
+        pytest.param("m/c/", "m/c", id="trailing_slash_trimmed"),
+        pytest.param("m\\c", "m/c", id="backslashes_normalised"),
+    ],
+)
+def test_normalize_prefix(raw: str, expected: str) -> None:
+    assert bu.normalize_prefix(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param("", id="empty"),
+        pytest.param("/abs/path", id="leading_slash"),
+        pytest.param("m/../c", id="parent_segment"),
+        pytest.param("m//c", id="empty_segment"),
+        pytest.param("./m", id="dot_segment"),
+    ],
+)
+def test_normalize_prefix_rejects_unsafe_values(raw: str) -> None:
+    with pytest.raises(ConfigError):
+        bu.normalize_prefix(raw)
+
+
+def test_data_blob_name_puts_manifest_path_under_data() -> None:
+    assert bu.data_blob_name(_PREFIX, "Shared/Photos/a.jpg") == f"{_PREFIX}/data/Shared/Photos/a.jpg"
+
+
+def test_resolve_config_prefers_flags_over_environment() -> None:
+    env = {
+        "AQUEDUCT_BLOB_ACCOUNT_URL": "https://other.blob.core.windows.net",
+        "AQUEDUCT_BLOB_CONTAINER": "other",
+        "AQUEDUCT_BLOB_PREFIX": "other/prefix",
+    }
+
+    cfg = bu.resolve_config(_ACCOUNT, "vault", "m/c", env)
+
+    assert (cfg.account_url, cfg.container, cfg.prefix) == (_ACCOUNT, "vault", "m/c")
+
+
+def test_resolve_config_falls_back_to_environment() -> None:
+    env = {
+        "AQUEDUCT_BLOB_ACCOUNT_URL": _ACCOUNT,
+        "AQUEDUCT_BLOB_CONTAINER": "vault",
+        "AQUEDUCT_BLOB_PREFIX": "m/c",
+    }
+
+    cfg = bu.resolve_config("", "", "", env)
+
+    assert (cfg.account_url, cfg.container, cfg.prefix) == (_ACCOUNT, "vault", "m/c")
+
+
+@pytest.mark.parametrize(
+    ("account", "container", "prefix"),
+    [
+        pytest.param("", "vault", "m/c", id="no_account"),
+        pytest.param(_ACCOUNT, "", "m/c", id="no_container"),
+        pytest.param(_ACCOUNT, "vault", "", id="no_prefix"),
+        pytest.param("http://contoso.blob.core.windows.net", "vault", "m/c", id="plain_http"),
+        pytest.param(f"{_ACCOUNT}/?sv=2024&sig=abc", "vault", "m/c", id="sas_token_in_url"),
+    ],
+)
+def test_resolve_config_rejects_missing_or_unsafe_values(account: str, container: str, prefix: str) -> None:
+    with pytest.raises(ConfigError):
+        bu.resolve_config(account, container, prefix, {})
+
+
+# --- hashing and blocks ---------------------------------------------------------
+
+
+def test_hash_file_pair_returns_sha256_and_md5_of_the_same_bytes(tmp_path: Path) -> None:
+    path = tmp_path / "f.bin"
+    path.write_bytes(b"evidence")
+
+    assert bu.hash_file_pair(path) == (_sha(b"evidence"), _md5(b"evidence"))
+
+
+def test_block_ids_are_deterministic_and_same_length() -> None:
+    ids = [bu.block_id(i) for i in (0, 1, 10, 99999)]
+
+    assert ids == [bu.block_id(i) for i in (0, 1, 10, 99999)]
+    assert len({len(i) for i in ids}) == 1
+    assert base64.b64decode(ids[0]) == b"00000000"
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_blocks"),
+    [
+        pytest.param(b"", 0, id="empty_file"),
+        pytest.param(b"abcd", 1, id="exactly_one_chunk"),
+        pytest.param(b"abcdefgh", 2, id="exact_multiple"),
+        pytest.param(b"abcdefghij", 3, id="remainder"),
+    ],
+)
+def test_upload_stages_the_expected_number_of_blocks(tmp_path: Path, payload: bytes, expected_blocks: int) -> None:
+    container = FakeContainer()
+    entry = _entry("a.bin", payload)
+    _source(tmp_path, entry, payload)
+
+    result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "ok"
+    assert len(container.staged_calls) == expected_blocks
+    assert container.blobs[f"{_PREFIX}/data/a.bin"].data == payload
+
+
+# --- the upload itself -----------------------------------------------------------
+
+
+def test_blocks_are_staged_with_azure_content_validation(tmp_path: Path) -> None:
+    container = FakeContainer()
+    entry = _entry("a.bin", b"abcdefgh")
+    _source(tmp_path, entry, b"abcdefgh")
+
+    bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert container.staged_calls
+    assert all(call[3] is True for call in container.staged_calls)
+
+
+def test_commit_records_sha256_identity_and_source_path_as_metadata(tmp_path: Path) -> None:
+    container = FakeContainer()
+    payload = b"hello"
+    entry = _entry("Shared/ü file.pdf", payload, item_id="guid-42")
+    _source(tmp_path, entry, payload)
+
+    bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    stored = container.blobs[f"{_PREFIX}/data/Shared/ü file.pdf"]
+    assert stored.metadata["sha256"] == _sha(payload)
+    assert stored.metadata["uniqueid"] == "guid-42"
+    assert stored.metadata["sourcepath"].isascii()
+    assert bytes(stored.md5) == _md5(payload)
+
+
+def test_result_row_carries_the_recorded_hash_and_blob_name(tmp_path: Path) -> None:
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+
+    result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert (result.path, result.status, result.size) == ("a.pdf", "ok", 5)
+    assert result.sha256 == _sha(b"hello")
+    assert result.blob_name == f"{_PREFIX}/data/a.pdf"
+    assert result.attempts == 1
+
+
+def test_missing_source_file_fails_without_uploading(tmp_path: Path) -> None:
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello")
+
+    result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "fail"
+    assert "not found" in result.detail
+    assert container.staged_calls == []
+
+
+def test_file_changed_since_validate_is_rejected_and_never_staged(tmp_path: Path) -> None:
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"HELLO")  # same size, different bytes
+
+    result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "rejected"
+    assert container.staged_calls == []
+    assert container.commits == []
+
+
+def test_file_that_changes_while_uploading_is_not_committed(tmp_path: Path, mocker) -> None:
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"abcdefgh")
+    source = _source(tmp_path, entry, b"abcdefgh")
+    real_read = bu._read_blocks
+
+    def mutate_then_read(path, chunk):
+        source.write_bytes(b"abcdXXXX")
+        return real_read(path, chunk)
+
+    mocker.patch("aqueduct.blobupload._read_blocks", side_effect=mutate_then_read)
+
+    result = bu.transfer(_ctx(container, retries=0), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "fail"
+    assert container.commits == []
+
+
+# --- verification: "completed" only when verified -------------------------------
+
+
+@pytest.mark.parametrize(
+    ("tamper", "fragment"),
+    [
+        pytest.param(lambda r: setattr(r, "size", r.size + 1), "size", id="size_mismatch"),
+        pytest.param(lambda r: r.metadata.update(sha256="0" * 64), "SHA-256", id="metadata_sha_mismatch"),
+        pytest.param(lambda r: setattr(r, "md5", bytearray(b"x" * 16)), "MD5", id="md5_mismatch"),
+    ],
+)
+def test_unverifiable_blob_is_retried_then_recorded_as_a_failure(tmp_path: Path, tamper, fragment: str) -> None:
+    container = FakeContainer()
+    container.tamper = tamper
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+
+    result = bu.transfer(_ctx(container, retries=2), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "fail"
+    assert fragment in result.detail
+    assert result.attempts == 3
+
+
+def test_blob_without_content_md5_is_still_verified_by_sha256(tmp_path: Path) -> None:
+    container = FakeContainer()
+    container.tamper = lambda r: setattr(r, "md5", None)
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+
+    result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "ok"
+
+
+# --- idempotency and immutability -----------------------------------------------
+
+
+def test_already_verified_blob_is_skipped_without_staging(tmp_path: Path) -> None:
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+    container.seed(f"{_PREFIX}/data/a.pdf", b"hello")
+
+    result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "skip"
+    assert container.staged_calls == []
+    assert container.commits == []
+
+
+def test_existing_blob_with_a_different_hash_is_a_conflict_and_is_not_overwritten(tmp_path: Path) -> None:
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+    container.seed(f"{_PREFIX}/data/a.pdf", b"OTHER")
+
+    result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "conflict"
+    assert container.commits == []
+    assert container.blobs[f"{_PREFIX}/data/a.pdf"].data == b"OTHER"
+
+
+def test_existing_blob_with_same_size_but_different_metadata_hash_is_a_conflict(tmp_path: Path) -> None:
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+    container.seed(f"{_PREFIX}/data/a.pdf", b"hello", sha256="f" * 64)
+
+    result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "conflict"
+
+
+def test_rerun_only_uploads_files_that_are_not_yet_in_the_vault(tmp_path: Path) -> None:
+    container = FakeContainer()
+    done, todo = _entry("done.pdf", b"aaaa"), _entry("todo.pdf", b"bbbb")
+    _source(tmp_path, done, b"aaaa")
+    _source(tmp_path, todo, b"bbbb")
+    container.seed(f"{_PREFIX}/data/done.pdf", b"aaaa")
+    items = [bu.data_item(_PREFIX, e, tmp_path) for e in (done, todo)]
+
+    results = bu.run_transfers(_ctx(container), items, workers=2)
+
+    assert {r.path: r.status for r in results} == {"done.pdf": "skip", "todo.pdf": "ok"}
+    assert container.commits == [f"{_PREFIX}/data/todo.pdf"]
+
+
+# --- retry ---------------------------------------------------------------------
+
+
+def test_transient_azure_error_is_retried_and_succeeds(tmp_path: Path) -> None:
+    container = FakeContainer()
+    container.stage_failures = 1
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+
+    result = bu.transfer(_ctx(container, retries=2), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "ok"
+    assert result.attempts == 2
+
+
+def test_retries_exhausted_is_recorded_as_a_failure(tmp_path: Path) -> None:
+    container = FakeContainer()
+    container.stage_failures = 99
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+
+    result = bu.transfer(_ctx(container, retries=1), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "fail"
+    assert result.attempts == 2
+    assert container.commits == []
+
+
+# --- audit bundle ----------------------------------------------------------------
+
+
+def _results(*rows: tuple[str, str, str]) -> list[bu.UploadResult]:
+    return [bu.UploadResult(path, status, 1, sha, f"{_PREFIX}/data/{path}", 1, 0.0) for path, status, sha in rows]
+
+
+def test_sha256sums_lists_every_verified_data_file_and_audit_file_in_sha256sum_format(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_bytes(b"{}")
+    results = _results(("a.pdf", "ok", "a" * 64), ("b.pdf", "skip", "b" * 64), ("c.pdf", "fail", "c" * 64))
+
+    text = bu.build_sha256sums(results, [manifest])
+
+    lines = text.splitlines()
+    assert f"{'a' * 64}  data/a.pdf" in lines
+    assert f"{'b' * 64}  data/b.pdf" in lines
+    assert f"{_sha(b'{}')}  _audit/manifest.json" in lines
+    assert not any("c.pdf" in line for line in lines)
+
+
+def test_sha256sums_is_sorted_so_the_bundle_is_reproducible(tmp_path: Path) -> None:
+    results = _results(("z.pdf", "ok", "z" * 64), ("a.pdf", "ok", "a" * 64))
+
+    lines = bu.build_sha256sums(results, []).splitlines()
+
+    assert lines == sorted(lines, key=lambda line: line.split("  ", 1)[1])
+
+
+def test_audit_items_are_named_under_a_per_run_audit_folder(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_bytes(b"{}")
+
+    item = bu.audit_item(_PREFIX, "20261004T221500Z", manifest)
+
+    assert item.name == f"{_PREFIX}/_audit/20261004T221500Z/manifest.json"
+    assert item.expected_sha256 == ""
+
+
+def test_audit_files_default_to_the_standard_record_names(tmp_path: Path) -> None:
+    for name in ("manifest.json", "manifest.csv", "filecopy_results.csv", "validate_results.csv"):
+        (tmp_path / name).write_text("x")
+    (tmp_path / "filecopy_results.csv.metadata.json").write_text("{}")
+
+    found = bu.default_audit_files(tmp_path)
+
+    assert [p.name for p in found] == [
+        "manifest.json",
+        "manifest.csv",
+        "filecopy_results.csv",
+        "filecopy_results.csv.metadata.json",
+        "validate_results.csv",
+    ]
+
+
+def test_custody_record_binds_the_sha256sums_hash_and_run_counts() -> None:
+    meta = {"tool": "upload", "tool_version": "0.1.0", "operator": "unspecified", "host_info": {}}
+    results = _results(("a.pdf", "ok", "a" * 64), ("b.pdf", "fail", "b" * 64))
+
+    record = bu.build_custody(meta, _ACCOUNT, "vault", _PREFIX, results, "deadbeef")
+
+    assert record["sha256sums_sha256"] == "deadbeef"
+    assert record["container"] == "vault"
+    assert record["prefix"] == _PREFIX
+    assert record["counts"] == {"ok": 1, "fail": 1}
+
+
+# --- command line -----------------------------------------------------------------
+
+
+def _write_validate_results(path: Path, rows: list[tuple[str, str]]) -> None:
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+        fh.write("# aqueduct acquisition (provenance)\r\n")
+        writer = csv.writer(fh)
+        writer.writerow(["path", "status", "sha256", "hash_check", "segment_check"])
+        for rel, sha in rows:
+            writer.writerow([rel, "ok", sha, "ok", ""])
+
+
+@pytest.fixture
+def workspace(tmp_path: Path, mocker, monkeypatch) -> SimpleNamespace:
+    """A download folder + manifest + validate results, with the Azure SDK replaced by a FakeContainer."""
+    monkeypatch.chdir(tmp_path)
+    container = FakeContainer()
+    mocker.patch("aqueduct.blobupload.open_container", return_value=container)
+    for var in ("AQUEDUCT_BLOB_ACCOUNT_URL", "AQUEDUCT_BLOB_CONTAINER", "AQUEDUCT_BLOB_PREFIX"):
+        monkeypatch.delenv(var, raising=False)
+    payload = b"hello"
+    (tmp_path / "download").mkdir()
+    (tmp_path / "download" / "a.pdf").write_bytes(payload)
+    manifest = {"items": [{"path": "a.pdf", "type": "file", "size": 5, "id": "guid-1"}]}
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    _write_validate_results(tmp_path / "validate_results.csv", [("a.pdf", _sha(payload))])
+    argv = ["--account-url", _ACCOUNT, "--container", "vault", "--dest-prefix", _PREFIX]
+    return SimpleNamespace(root=tmp_path, container=container, argv=argv, payload=payload)
+
+
+def test_main_uploads_data_then_writes_results_and_audit_bundle(workspace) -> None:
+    code = bu.main(workspace.argv)
+
+    names = set(workspace.container.blobs)
+    assert code == 0
+    assert f"{_PREFIX}/data/a.pdf" in names
+    audit = {n.rsplit("/", 1)[1] for n in names if "/_audit/" in n}
+    assert {"manifest.json", "validate_results.csv", "upload_results.csv", "SHA256SUMS", "custody.json"} <= audit
+    assert (workspace.root / "upload_results.csv.metadata.json").exists()
+
+
+def test_main_uploads_audit_files_after_the_data_files(workspace) -> None:
+    bu.main(workspace.argv)
+
+    commits = workspace.container.commits
+    data_at = commits.index(f"{_PREFIX}/data/a.pdf")
+    assert all(commits.index(n) > data_at for n in commits if "/_audit/" in n)
+
+
+def test_main_results_csv_has_provenance_header_and_columns(workspace) -> None:
+    bu.main(workspace.argv)
+
+    text = (workspace.root / "upload_results.csv").read_text(encoding="utf-8-sig")
+    lines = [line for line in text.splitlines() if line]
+    assert lines[0].startswith("# ")
+    header = next(line for line in lines if not line.startswith("#"))
+    assert header == "path,status,size,sha256,blob_name,attempts,seconds,detail"
+
+
+def test_main_sha256sums_in_vault_matches_local_file_hashes(workspace) -> None:
+    bu.main(workspace.argv)
+
+    sums_name = next(n for n in workspace.container.blobs if n.endswith("/SHA256SUMS"))
+    text = workspace.container.blobs[sums_name].data.decode()
+    assert f"{_sha(workspace.payload)}  data/a.pdf" in text.splitlines()
+
+
+def test_main_rerun_skips_data_and_adds_a_new_audit_folder_without_conflict(workspace, mocker) -> None:
+    bu.main(workspace.argv)
+    mocker.patch("aqueduct.blobupload._run_id", return_value="20991231T000000Z")
+
+    code = bu.main(workspace.argv)
+
+    assert code == 0
+    assert workspace.container.commits.count(f"{_PREFIX}/data/a.pdf") == 1
+    assert any("/_audit/20991231T000000Z/" in n for n in workspace.container.blobs)
+
+
+def test_main_refuses_files_that_did_not_pass_validate(workspace) -> None:
+    _write_validate_results(workspace.root / "validate_results.csv", [])
+
+    code = bu.main(workspace.argv)
+
+    assert code == 1
+    assert f"{_PREFIX}/data/a.pdf" not in workspace.container.blobs
+    rows = list(
+        csv.DictReader(
+            line
+            for line in (workspace.root / "upload_results.csv").read_text("utf-8-sig").splitlines()
+            if not line.startswith("#")
+        )
+    )
+    assert [(r["path"], r["status"]) for r in rows] == [("a.pdf", "rejected")]
+
+
+def test_main_conflict_exits_nonzero(workspace) -> None:
+    workspace.container.seed(f"{_PREFIX}/data/a.pdf", b"OTHER")
+
+    assert bu.main(workspace.argv) == 1
+
+
+def test_main_missing_validate_results_exits_2(workspace) -> None:
+    (workspace.root / "validate_results.csv").unlink()
+
+    assert bu.main(workspace.argv) == 2
+
+
+def test_main_missing_destination_config_exits_2(workspace) -> None:
+    assert bu.main(["--container", "vault", "--dest-prefix", _PREFIX]) == 2
+
+
+def test_main_missing_manifest_exits_2(workspace) -> None:
+    (workspace.root / "manifest.json").unlink()
+
+    assert bu.main(workspace.argv) == 2
+
+
+def test_logs_never_contain_sas_tokens_or_credentials(workspace, caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+
+    bu.main(workspace.argv)
+
+    assert "sig=" not in caplog.text
+    assert "AccountKey" not in caplog.text
