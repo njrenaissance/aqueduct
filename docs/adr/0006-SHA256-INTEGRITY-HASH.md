@@ -69,3 +69,7 @@ Use **SHA-256** as the integrity hash for the web-session path.
   manifest therefore stays **size + completeness**
   ([ADR-0002](0002-DOWNLOAD-VIA-DOWNLOAD-ASPX.md)); the SHA-256 is the
   chain-of-custody fingerprint on top.
+- **Later hops can verify more strongly.** A destination that reports its own hash (SharePoint's
+  QuickXorHash on direct upload, [ADR-0012](0012-DIRECT-GRAPH-UPLOAD-TO-SHAREPOINT.md)) allows a
+  true end-to-end check of that hop; the download hop never can. Don't read "validated" as the
+  same guarantee at every hop.

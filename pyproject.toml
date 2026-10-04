@@ -18,6 +18,7 @@ login = "aqueduct.login:main"
 webenum = "aqueduct.webenum:main"
 filecopy = "aqueduct.filecopy:main"
 validate = "aqueduct.validate:main"
+spupload = "aqueduct.spupload:main"
 
 [build-system]
 requires = ["hatchling"]

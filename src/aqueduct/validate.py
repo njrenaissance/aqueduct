@@ -67,18 +67,27 @@ def _sha256_file(path: Path) -> str:
 
 
 def _load_reference(path: Path) -> dict[str, str]:
-    """Recorded SHA-256s from a filecopy results CSV, keyed by manifest path."""
+    """Recorded SHA-256s from a filecopy results CSV, keyed by manifest path.
+
+    An absent file means "no reference" (empty dict). A file that exists but can't be read, or lacks
+    the expected columns, raises ValueError: silently returning an empty reference would downgrade
+    "verified" to "just recorded" without the operator knowing.
+    """
     ref: dict[str, str] = {}
     if not path or not path.exists():
         return ref
     try:
         with open(path, encoding="utf-8-sig", newline="") as fh:
-            for row in csv.DictReader(fh):
+            # filecopy writes "# ..." provenance lines above the header; skip them.
+            rows = csv.DictReader(line for line in fh if not line.lstrip().startswith("#"))
+            if not rows.fieldnames or not {"path", "sha256"} <= set(rows.fieldnames):
+                raise ValueError(f"{path}: not a filecopy results CSV (needs 'path' and 'sha256' columns)")
+            for row in rows:
                 sha = (row.get("sha256") or "").strip()
                 if sha:
                     ref[row["path"]] = sha
-    except (OSError, csv.Error, KeyError):
-        pass
+    except (OSError, csv.Error) as exc:
+        raise ValueError(f"cannot read hash reference {path}: {exc}") from exc
     return ref
 
 
@@ -293,7 +302,11 @@ def main() -> int:
     args = ap.parse_args()
 
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
-    reference = _load_reference(Path(args.verify_against)) if args.hash else {}
+    try:
+        reference = _load_reference(Path(args.verify_against)) if args.hash else {}
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
     return validate(manifest, Path(args.dest), args.hash, Path(args.results), reference, args.operator)
 
 

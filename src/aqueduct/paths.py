@@ -14,6 +14,7 @@ from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".aqueduct"
 AUTH_STATE_PATH = CONFIG_DIR / "auth_state.json"  # webenum/filecopy web session
+GRAPH_CONFIG_PATH = CONFIG_DIR / "graph.json"  # spupload destination-tenant app credentials (ADR-0012)
 
 
 def ensure_config_dir() -> Path:

@@ -7,6 +7,8 @@ import csv
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from aqueduct import validate
 
 
@@ -280,3 +282,24 @@ def test_validate_handles_empty_file_with_segments(tmp_path):
     rows = _read_csv_rows(tmp_path / "r.csv")
     assert rows[0]["status"] == "ok"
     assert rows[0]["actual_bytes"] == "0"
+
+
+_PROVENANCE = "# aqueduct acquisition (provenance; full run metadata)\r\n# tool: filecopy 1.0\r\n"
+
+
+def test_load_reference_skips_provenance_lines(tmp_path):
+    ref_csv = tmp_path / "filecopy_results.csv"
+    content = _PROVENANCE + "path,status,sha256\r\na.txt,ok," + "a" * 64 + "\r\n"
+    ref_csv.write_bytes(content.encode("utf-8-sig"))  # bytes: write_text would turn \r\n into \r\r\n on Windows
+    assert validate._load_reference(ref_csv) == {"a.txt": "a" * 64}
+
+
+def test_load_reference_absent_file_is_empty(tmp_path):
+    assert validate._load_reference(tmp_path / "missing.csv") == {}
+
+
+def test_load_reference_wrong_schema_raises(tmp_path):
+    ref_csv = tmp_path / "filecopy_results.csv"
+    ref_csv.write_text("foo,bar\r\n1,2\r\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="not a filecopy results CSV"):
+        validate._load_reference(ref_csv)
