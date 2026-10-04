@@ -68,6 +68,7 @@ flowchart LR
     P --> B["2 · webenum<br/>enumerate"]
     B --> C["3 · filecopy<br/>download"]
     C --> D["4 · validate<br/>verify"]
+    D --> E["5 · upload<br/>preserve in Blob vault"]
 ```
 
 ```bash
@@ -76,6 +77,7 @@ uv run login "<share-url>"     # 0 · sign in (only if NOT already authenticated
 uv run webenum enumerate       # 2 · walk the share -> manifest.json + manifest.csv
 uv run filecopy -c 8           # 3 · download every file -> ./download/ (resumable)
 uv run validate --hash         # 4 · reconcile vs manifest; record a dated hash
+uv run upload --dest-prefix <matter>/<collection>   # 5 · preserve in the Azure Blob vault (see docs/WORKFLOW.md)
 ```
 
 - **`login` (step 0 — only if not already authenticated)** — opens a real browser;
@@ -133,7 +135,7 @@ export ONEDRIVE_SHARE_URL="https://contoso-my.sharepoint.com/:f:/r/personal/jdoe
 
 ```text
 aqueduct/
-├── src/aqueduct/         login, webenum, filecopy, validate   (tools)
+├── src/aqueduct/         login, webenum, filecopy, validate, upload   (tools)
 │                         shareurl, paths                       (shared helpers)
 ├── tests/                pytest suite            (uv run pytest)
 ├── docs/

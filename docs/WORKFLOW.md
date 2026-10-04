@@ -24,6 +24,7 @@ flowchart LR
     P --> B["2 · webenum<br/>enumerate"]
     B --> C["3 · filecopy<br/>download"]
     C --> D["4 · validate<br/>verify"]
+    D --> E["5 · upload<br/>preserve in Blob vault"]
 ```
 
 | Step | Command | Produces |
@@ -33,6 +34,7 @@ flowchart LR
 | 2. Enumerate | `webenum enumerate` | `manifest.json` + `manifest.csv` (the dated record) |
 | 3. Download | `filecopy -c 8` | Every file under `download/` |
 | 4. Validate | `validate --hash` | `validate_results.csv` (pass/fail + hashes) |
+| 5. Preserve | `upload --dest-prefix <matter>/<collection>` | Evidence + audit record in the Blob vault; `upload_results.csv` |
 
 ---
 
@@ -135,7 +137,59 @@ If anything fails, re-run `filecopy` to fill the gaps, then validate again.
 
 ---
 
-## Step 5 — (Optional) Upload to SharePoint
+## Step 5 — Preserve in the Azure Blob vault
+
+Sends the validated download to an **immutable (WORM) Blob container** and proves, by
+hash, that what arrived is what you collected. See
+[ADR-0013](adr/0013-UPLOAD-TO-IMMUTABLE-BLOB.md).
+
+One-time setup (your IT/Azure admin): a storage account with a container that has a
+time-based retention policy and/or legal hold, and your Azure identity holding
+`Storage Blob Data Contributor` on it. Sign in with `az login` (or any identity
+`DefaultAzureCredential` understands). No keys, SAS tokens, or secrets are used.
+
+Choose a **folder for this collection** inside the container and never reuse it:
+
+```text
+<container>/
+  <matter-id>/                     e.g. 2026-0042-smith
+    <collection-id>/               e.g. 20261004-share-a   (one per enumerate/download run)
+      data/<original path...>      the evidence, exactly as in manifest.json
+      _audit/<run-id>/             the acquisition record for each upload run
+```
+
+```bash
+uv run upload --account-url https://contoso.blob.core.windows.net --container vault     --dest-prefix 2026-0042-smith/20261004-share-a
+```
+
+(or set `AQUEDUCT_BLOB_ACCOUNT_URL`, `AQUEDUCT_BLOB_CONTAINER`, `AQUEDUCT_BLOB_PREFIX`).
+
+What it does:
+
+- Uploads only files that passed `validate --hash` **and** whose hash matches what
+  `filecopy` recorded. Each file is re-hashed first; a file that changed since
+  `validate` is **rejected**, not uploaded.
+- Sends each file in blocks that Azure checks on arrival, then stores the file's
+  **SHA-256** (the evidence fingerprint) and its source `UniqueId` on the blob.
+- A file counts as done only when the stored blob is read back and its size, SHA-256
+  and Content-MD5 match. Anything else is a `fail`.
+- Safe to re-run: files already preserved with the same hash are skipped. A blob that
+  already exists with a **different** hash is a `conflict` and is never overwritten.
+- Finally stores the **acquisition record** beside the evidence in
+  `_audit/<run-id>/`: `manifest.json`/`.csv`, `filecopy_results.csv`,
+  `validate_results.csv`, `upload_results.csv` (each with its `.metadata.json`
+  sidecar), a `SHA256SUMS` file (verify any file later with `sha256sum -c`), and
+  `custody.json`, which records the hash of `SHA256SUMS`. Each run adds its own
+  `<run-id>` folder; earlier ones are never touched. Add more with `--audit-file`.
+
+**Write down the SHA-256 of `SHA256SUMS`** (it is in `custody.json`) somewhere outside
+the vault — a ticket or email. It anchors the whole record. This trail is not the
+tamper-evident ledger ([ADR-0009](adr/0009-TAMPER-EVIDENT-LEDGER.md)); it cannot prove
+custody events after the upload.
+
+---
+
+## Step 6 — (Optional) Upload to SharePoint
 
 > **This bypasses the Azure Blob vault.** The SharePoint copy is a convenience/review
 > copy, **not evidence** — the command warns, and records the bypass in its results.
@@ -153,7 +207,7 @@ target site. Then save its details in `~/.aqueduct/graph.json` (fictional values
 Put the client secret in the `AQUEDUCT_GRAPH_CLIENT_SECRET` environment variable (or a
 `client_secret` field in that file). Never commit it or paste it into logs.
 
-Run it after `validate --hash` has passed, naming the **site, document library, and
+Run it after `validate --hash` has passed (Step 5 is not required), naming the **site, document library, and
 folder** — either as one pasted folder URL, or as separate options:
 
 ```bash
@@ -185,7 +239,9 @@ From the case data folder:
 - `download/` — the files themselves.
 - `filecopy_results.csv` and `validate_results.csv` — proof of what was retrieved and
   that it matches the record.
-- `spupload_results.csv` — only if you used Step 5; it records a **non-evidentiary**
+- `upload_results.csv` — what was preserved in the Blob vault, with the hash of each file.
+  The vault's `_audit/<run-id>/` folder holds a copy of this whole record.
+- `spupload_results.csv` — only if you used Step 6; it records a **non-evidentiary**
   review copy, not preservation.
 
 ## Troubleshooting
