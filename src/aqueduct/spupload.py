@@ -57,6 +57,7 @@ from aqueduct.graphclient import (
 )
 from aqueduct.paths import GRAPH_CONFIG_PATH
 from aqueduct.quickxorhash import QuickXorHash
+from aqueduct.validated import UploadEntry, load_entries
 
 log = logging.getLogger("spupload")
 
@@ -73,26 +74,6 @@ _VAULT_WARNING = (
 _COLUMNS = ["path", "status", "size", "sha256", "quick_xor_hash", "attempts", "seconds", "detail"]
 _UPLOADED = ("ok", "size-only")
 _FAILED = ("fail", "rejected")
-
-
-@dataclass(frozen=True)
-class UploadEntry:
-    """One validated manifest file: where it lives locally and where it goes in the library."""
-
-    path: str  # manifest-relative, "/"-separated
-    filename: str
-    destination: str  # parent folder under the target ("" = the target itself)
-    size: int
-    sha256: str  # the value ``validate`` recorded
-
-    @classmethod
-    def from_manifest_path(cls, path: str, size: int, sha256: str = "") -> UploadEntry:
-        normalized = path.replace("\\", "/").strip("/")
-        destination, _, filename = normalized.rpartition("/")
-        return cls(normalized, filename, destination, size, sha256)
-
-    def local_path(self, root: Path) -> Path:
-        return root.joinpath(*self.path.split("/"))
 
 
 @dataclass
@@ -131,49 +112,7 @@ class _Job:
     digest: str  # QuickXorHash, base64
 
 
-# --- gating: only files that passed `validate --hash` --------------------------
-
-
-def _norm(path: str) -> str:
-    return path.replace("\\", "/").strip("/")
-
-
-def _read_validate_rows(results_path: Path) -> dict[str, dict[str, str]]:
-    if not results_path.exists():
-        raise FileNotFoundError(f"{results_path} not found - run `validate --hash` before spupload")
-    text = results_path.read_text(encoding="utf-8-sig")
-    lines = [line for line in text.splitlines() if not line.startswith("#")]  # skip provenance comments
-    return {_norm(row["path"]): row for row in csv.DictReader(lines)}
-
-
-def _rejection_reason(row: dict[str, str] | None) -> str | None:
-    if row is None or row.get("status") != "ok":
-        return "not validated"
-    if not row.get("sha256"):
-        return "no SHA-256"
-    if row.get("hash_check") == "mismatch":
-        return "hash mismatch"
-    if row.get("segment_check") == "mismatch":
-        return "segment mismatch"
-    return None
-
-
-def load_entries(manifest: dict, results_path: Path) -> tuple[list[UploadEntry], list[tuple[UploadEntry, str]]]:
-    """Split the manifest's files into those that passed ``validate --hash`` and those that did not."""
-    rows = _read_validate_rows(results_path)
-    eligible: list[UploadEntry] = []
-    rejected: list[tuple[UploadEntry, str]] = []
-    for item in manifest["items"]:
-        if item["type"] != "file":
-            continue
-        row = rows.get(_norm(item["path"]))
-        entry = UploadEntry.from_manifest_path(item["path"], int(item["size"]), (row or {}).get("sha256", ""))
-        reason = _rejection_reason(row)
-        if reason is None:
-            eligible.append(entry)
-        else:
-            rejected.append((entry, reason))
-    return eligible, rejected
+# --- screening: files SharePoint will not take ----------------------------------
 
 
 def screen_entries(
