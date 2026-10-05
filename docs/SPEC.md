@@ -1,8 +1,9 @@
 # SPEC — Evidence Preservation & Review Pipeline
 
-> **Status: Draft — forward-looking.** This describes a *later product* that builds
-> on the current `aqueduct` tooling. Only **Stage 1** (download + hash +
-> validate) exists today; Stages 2–4 are specified here, not yet implemented.
+> **Status: Draft — partly implemented.** This describes a *later product* that builds
+> on the current `aqueduct` tooling. **Stage 1** (download + hash + validate) and
+> **Stage 2** (`upload` to the Blob vault, from the local download) exist today; Stages
+> 3–4 are specified here, not yet implemented.
 > Examples are generic; substitute real tenants/containers when building.
 
 ## 1. Purpose
@@ -258,9 +259,13 @@ on a server.
   is the collection tier and the seed of the ledger.
 - **`spupload` exists** as an optional, vault-bypassing direct upload of the validated
   download to SharePoint (see §7 and ADR-0012); it is not part of the pipeline stages.
-- **Stages 2–4 are new components** to build against this spec: Blob uploader +
-  verifier, classifier/router, SharePoint sync, and the ledger database that ties
-  them together.
+- **Stage 2 exists** as `upload`: it sends the validated local download to the immutable
+  Blob vault, verifies size + SHA-256 + `Content-MD5` after commit, and stores the
+  acquisition record (`manifest`, results CSVs, `SHA256SUMS`, `custody.json`) under
+  `_audit/` beside the evidence ([ADR-0013](adr/0013-UPLOAD-TO-IMMUTABLE-BLOB.md)).
+  Streaming without a local copy (§10, ADR-0008) is not built yet.
+- **Stages 3–4 are new components** to build against this spec: classifier/router and
+  SharePoint sync, plus the ledger database that ties them together.
 
 ## 12. Open questions
 

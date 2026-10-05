@@ -17,8 +17,9 @@ they were made. Each is self-contained; read them in order for the full picture.
 | [ADR-0010](0010-WEB-SESSION-ONLY-REMOVE-GRAPH-PATH.md) | Web-session only — remove the Graph-API (`odenum`) path |
 | [ADR-0011](0011-LOGICAL-ACQUISITION-OF-A-REMOTE-SOURCE.md) | Logical acquisition of a remote source (physical is impossible); describe the method, don't claim the "forensic" label |
 | [ADR-0012](0012-DIRECT-GRAPH-UPLOAD-TO-SHAREPOINT.md) | Direct upload of a validated download to SharePoint via Graph — a convenience/review copy, not evidence |
+| [ADR-0013](0013-UPLOAD-TO-IMMUTABLE-BLOB.md) | Upload the validated download to the immutable Azure Blob vault (Stage 2), with the audit record stored beside it |
 
-ADR-0001–0006 and 0010 describe the shipped collection tool; ADR-0007–0009 are
+ADR-0001–0006, 0010 and 0013 describe the shipped tool; ADR-0007–0009 are
 forward-looking decisions that govern the [pipeline SPEC](../SPEC.md) and are not yet
 implemented. ADR-0010 supersedes the `odenum`/`quickxor`-specific parts of 0001, 0005,
 and 0006.
