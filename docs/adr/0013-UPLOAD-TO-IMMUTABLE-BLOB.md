@@ -72,6 +72,12 @@ with the evidence for now.
   audit copies, and that is the point.
 - The local copy must exist until the upload finishes, which is wrong for the small-disk desktop VM at scale —
   the reason ADR-0008's streaming path (#14) exists.
-- The sync SDK means one thread per in-flight file; very high `--concurrency` costs memory (one block per thread).
+- The sync SDK means one thread per in-flight file plus up to `--block-workers` staging threads per file; memory is
+  about `--concurrency × --block-workers × --chunk-mb`.
+- **Reading each file once (Issue #18).** The vault is looked up by name first: absent means upload, a different
+  size is a conflict, a same-size blob is the only case that reads the local file just to compare. A new file is
+  hashed while its blocks are staged and compared to the validated SHA-256 before `commit_block_list`; on a mismatch
+  nothing is committed (Azure discards uncommitted blocks) and the row is `rejected`. Same guarantee as re-hashing
+  first, one read instead of two.
 - Adds the Azure SDK to a tool that had only `httpx` and Playwright, and a one-time Azure setup (container with a
   retention policy or legal hold, a write role for the uploader) that this ADR does not automate.

@@ -10,6 +10,7 @@ import csv
 import hashlib
 import json
 import logging
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -51,6 +52,8 @@ class FakeBlob:
         )
 
     def stage_block(self, block_id: str, data: bytes, validate_content: bool = False) -> None:
+        if self.container.on_stage:
+            self.container.on_stage(block_id)
         if self.container.stage_failures:
             self.container.stage_failures -= 1
             raise ServiceRequestError("transient")
@@ -74,6 +77,7 @@ class FakeContainer:
         self.staged_calls: list[tuple] = []
         self.commits: list[str] = []
         self.stage_failures = 0
+        self.on_stage = None  # called with the block id at the start of every stage_block
         self.tamper = None
 
     def get_blob_client(self, name: str) -> FakeBlob:
@@ -273,7 +277,7 @@ def test_missing_source_file_fails_without_uploading(tmp_path: Path) -> None:
     assert container.staged_calls == []
 
 
-def test_file_changed_since_validate_is_rejected_and_never_staged(tmp_path: Path) -> None:
+def test_new_file_changed_since_validate_is_rejected_and_never_committed(tmp_path: Path) -> None:
     container = FakeContainer()
     entry = _entry("a.pdf", b"hello")
     _source(tmp_path, entry, b"HELLO")  # same size, different bytes
@@ -281,8 +285,21 @@ def test_file_changed_since_validate_is_rejected_and_never_staged(tmp_path: Path
     result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
 
     assert result.status == "rejected"
-    assert container.staged_calls == []
+    assert result.attempts == 0  # not retried
     assert container.commits == []
+    assert not container.blobs
+
+
+def test_file_changed_since_validate_is_rejected_before_conflict_when_a_same_size_blob_exists(tmp_path: Path) -> None:
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"HELLO")
+    container.seed(f"{_PREFIX}/data/a.pdf", b"hello")
+
+    result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "rejected"
+    assert container.staged_calls == []
 
 
 def test_file_that_changes_while_uploading_is_not_committed(tmp_path: Path, mocker) -> None:
@@ -299,7 +316,7 @@ def test_file_that_changes_while_uploading_is_not_committed(tmp_path: Path, mock
 
     result = bu.transfer(_ctx(container, retries=0), bu.data_item(_PREFIX, entry, tmp_path))
 
-    assert result.status == "fail"
+    assert result.status == "rejected"  # the single hash pass saw bytes other than the validated ones
     assert container.commits == []
 
 
@@ -611,3 +628,312 @@ def test_logs_never_contain_sas_tokens_or_credentials(workspace, caplog) -> None
 
     assert "sig=" not in caplog.text
     assert "AccountKey" not in caplog.text
+
+
+# --- size-first lookup and the single hash pass (Issue #18) ----------------------
+
+
+def _spy_hashing(mocker):
+    return mocker.patch("aqueduct.blobupload.hash_file_pair", wraps=bu.hash_file_pair)
+
+
+def test_new_file_is_hashed_in_one_pass_while_staging(tmp_path: Path, mocker) -> None:
+    spy = _spy_hashing(mocker)
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello world")
+    _source(tmp_path, entry, b"hello world")
+
+    result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "ok"
+    assert result.sha256 == _sha(b"hello world")
+    spy.assert_not_called()
+
+
+def test_existing_blob_of_a_different_size_is_a_conflict_without_reading_the_file(tmp_path: Path, mocker) -> None:
+    spy = _spy_hashing(mocker)
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+    container.seed(f"{_PREFIX}/data/a.pdf", b"hello world")
+
+    result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "conflict"
+    spy.assert_not_called()
+    assert container.staged_calls == []
+
+
+def test_existing_matching_blob_is_skipped_after_one_hash(tmp_path: Path, mocker) -> None:
+    spy = _spy_hashing(mocker)
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+    container.seed(f"{_PREFIX}/data/a.pdf", b"hello")
+
+    result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "skip"
+    spy.assert_called_once()
+
+
+# --- parallel block staging ----------------------------------------------------------
+
+
+def test_blocks_of_one_file_are_staged_concurrently_and_committed_in_order(tmp_path: Path) -> None:
+    container = FakeContainer()
+    barrier = threading.Barrier(2, timeout=5)  # two blocks must be inside stage_block at the same time
+    container.on_stage = lambda _ident: barrier.wait()
+    payload = b"abcdefgh"  # two 4-byte blocks
+    entry = _entry("a.pdf", payload)
+    _source(tmp_path, entry, payload)
+    ctx = _ctx(container)
+    ctx.block_workers = 2
+
+    result = bu.transfer(ctx, bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "ok"
+    assert container.blobs[f"{_PREFIX}/data/a.pdf"].data == payload
+
+
+def test_a_failed_block_among_parallel_blocks_is_retried_and_the_file_verified(tmp_path: Path) -> None:
+    container = FakeContainer()
+    container.stage_failures = 1
+    payload = b"abcdefghijkl"
+    entry = _entry("a.pdf", payload)
+    _source(tmp_path, entry, payload)
+    ctx = _ctx(container, retries=1)
+    ctx.block_workers = 3
+
+    result = bu.transfer(ctx, bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "ok"
+    assert result.attempts == 2  # noqa: PLR2004
+    assert container.blobs[f"{_PREFIX}/data/a.pdf"].data == payload
+
+
+# --- progress -------------------------------------------------------------------------
+
+
+def test_progress_counts_files_and_bytes_for_every_outcome(tmp_path: Path) -> None:
+    container = FakeContainer()
+    new, done = _entry("new.pdf", b"hello"), _entry("done.pdf", b"world!")
+    _source(tmp_path, new, b"hello")
+    _source(tmp_path, done, b"world!")
+    container.seed(f"{_PREFIX}/data/done.pdf", b"world!")
+    items = [bu.data_item(_PREFIX, e, tmp_path) for e in (new, done)]
+    ctx = _ctx(container)
+
+    bu.run_transfers(ctx, items, workers=2)
+
+    assert (ctx.progress.files_done, ctx.progress.bytes_done) == (2, 11)
+    assert (ctx.progress.total_files, ctx.progress.total_bytes) == (2, 11)
+
+
+def test_failed_attempt_bytes_are_not_double_counted(tmp_path: Path) -> None:
+    container = FakeContainer()
+    container.stage_failures = 1
+    entry = _entry("a.pdf", b"abcdefgh")
+    _source(tmp_path, entry, b"abcdefgh")
+    ctx = _ctx(container, retries=1)
+
+    bu.run_transfers(ctx, [bu.data_item(_PREFIX, entry, tmp_path)], workers=1)
+
+    assert ctx.progress.bytes_done == 8  # noqa: PLR2004
+
+
+def test_large_files_are_announced_when_they_start(tmp_path: Path, mocker, caplog) -> None:
+    mocker.patch("aqueduct.blobupload._LARGE_BYTES", 1)
+    entry = _entry("big.bin", b"hello")
+    _source(tmp_path, entry, b"hello")
+
+    with caplog.at_level(logging.INFO, logger="upload"):
+        bu.transfer(_ctx(FakeContainer()), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert any(line.startswith("start ") and "big.bin" in line for line in caplog.messages)
+
+
+def test_progress_line_is_logged_on_a_timer_and_the_thread_stops(caplog) -> None:
+    progress = bu.Progress(total_files=3, total_bytes=3_000_000_000)
+
+    with caplog.at_level(logging.INFO, logger="upload"), bu._ProgressReporter(progress, interval=0.01) as reporter:
+        threading.Event().wait(0.1)  # real wait: the autouse fixture stubs time.sleep
+
+    assert any("progress: 0/3 files, 0.00/3.00 GB" in m for m in caplog.messages)
+    assert not reporter._thread.is_alive()
+
+
+# --- results checkpoint -----------------------------------------------------------------
+
+_RUN_META = {"tool": "upload", "tool_version": "1", "operator": "x", "host_info": {}, "started_at_utc": "t0"}
+
+
+def _result_row(name: str) -> bu.UploadResult:
+    return bu.UploadResult(name, "ok", 1, "a" * 64, f"{_PREFIX}/data/{name}", 1, 0.1)
+
+
+def test_checkpoint_rewrites_the_results_csv_every_n_files(tmp_path: Path, mocker) -> None:
+    mocker.patch("aqueduct.blobupload._FLUSH_EVERY", 2)
+    path = tmp_path / "upload_results.csv"
+    checkpoint = bu._Checkpoint(path, _RUN_META, "vault/m/c")
+
+    checkpoint(_result_row("a.pdf"))
+    assert not path.exists()
+    checkpoint(_result_row("b.pdf"))
+
+    text = path.read_text(encoding="utf-8-sig")
+    assert "a.pdf" in text
+    assert "b.pdf" in text
+    assert "in progress" in text
+
+
+def test_checkpoint_rewrites_the_results_csv_after_the_time_interval(tmp_path: Path, mocker) -> None:
+    mocker.patch("aqueduct.blobupload._FLUSH_SECONDS", 0)
+    path = tmp_path / "upload_results.csv"
+
+    bu._Checkpoint(path, _RUN_META, "vault/m/c")(_result_row("a.pdf"))
+
+    assert "a.pdf" in path.read_text(encoding="utf-8-sig")
+
+
+def test_interrupted_run_leaves_a_results_csv_behind(workspace, mocker) -> None:
+    mocker.patch("aqueduct.blobupload.run_transfers", side_effect=KeyboardInterrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        bu.main(workspace.argv)
+
+    assert (workspace.root / "upload_results.csv").exists()
+
+
+# --- hash and block worker options -------------------------------------------------------
+
+
+def test_hash_workers_cap_how_many_files_are_hashed_at_once(tmp_path: Path, mocker) -> None:
+    container = FakeContainer()
+    items = []
+    for n in range(4):
+        entry = _entry(f"f{n}.bin", b"hello")
+        _source(tmp_path, entry, b"hello")
+        container.seed(f"{_PREFIX}/data/f{n}.bin", b"hello")  # same size -> each must be hashed
+        items.append(bu.data_item(_PREFIX, entry, tmp_path))
+    live, peak, lock = [0], [0], threading.Lock()
+    real = bu.hash_file_pair
+
+    def counting(path):
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+        threading.Event().wait(0.05)
+        try:
+            return real(path)
+        finally:
+            with lock:
+                live[0] -= 1
+
+    mocker.patch("aqueduct.blobupload.hash_file_pair", side_effect=counting)
+    ctx = _ctx(container)
+    ctx.hash_sem = threading.BoundedSemaphore(1)
+
+    bu.run_transfers(ctx, items, workers=4)
+
+    assert peak[0] == 1
+
+
+def test_parse_args_defaults_for_worker_options() -> None:
+    args = bu.parse_args([])
+
+    assert (args.block_workers, args.hash_workers) == (4, 3)
+
+
+# --- review findings -------------------------------------------------------------------
+
+
+def test_unreadable_source_with_an_existing_same_size_blob_is_a_fail_row_not_a_crash(tmp_path: Path, mocker) -> None:
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+    container.seed(f"{_PREFIX}/data/a.pdf", b"hello")
+    mocker.patch("aqueduct.blobupload.hash_file_pair", side_effect=PermissionError("locked"))
+
+    result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "fail"
+    assert "locked" in result.detail
+
+
+def test_transient_vault_lookup_error_is_retried(tmp_path: Path, mocker) -> None:
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+    real = bu._existing_properties
+    calls = []
+
+    def flaky(ctx, name):
+        calls.append(name)
+        if len(calls) == 1:
+            raise ServiceRequestError("503")
+        return real(ctx, name)
+
+    mocker.patch("aqueduct.blobupload._existing_properties", side_effect=flaky)
+
+    result = bu.transfer(_ctx(container, retries=1), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "ok"
+
+
+def test_vault_lookup_that_keeps_failing_is_recorded_as_a_failure(tmp_path: Path, mocker) -> None:
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+    mocker.patch("aqueduct.blobupload._existing_properties", side_effect=ServiceRequestError("503"))
+
+    result = bu.transfer(_ctx(FakeContainer(), retries=1), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "fail"
+    assert "could not check the vault" in result.detail
+
+
+def test_retry_after_a_committed_but_unreadable_blob_does_not_commit_again(tmp_path: Path, mocker) -> None:
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+    real_get = FakeBlob.get_blob_properties
+    reads = []
+
+    def flaky_readback(self):
+        reads.append(self.name)
+        if len(reads) == 2:  # the read-back right after the first commit (the first read is the lookup)
+            raise ServiceRequestError("read-back lost")
+        return real_get(self)
+
+    mocker.patch.object(FakeBlob, "get_blob_properties", flaky_readback)
+
+    result = bu.transfer(_ctx(container, retries=1), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "ok"
+    assert container.commits == [f"{_PREFIX}/data/a.pdf"]  # committed once, then re-verified
+
+
+def test_new_uploads_are_also_held_to_the_hash_workers_cap(tmp_path: Path) -> None:
+    container = FakeContainer()
+    items = []
+    for n in range(4):
+        entry = _entry(f"f{n}.bin", b"abcdefgh")
+        _source(tmp_path, entry, b"abcdefgh")
+        items.append(bu.data_item(_PREFIX, entry, tmp_path))
+    ctx = _ctx(container)
+    held = []
+    ctx.hash_sem = threading.BoundedSemaphore(1)
+    real_read = bu._read_blocks
+
+    def watching(path, chunk):
+        for data in real_read(path, chunk):
+            held.append(ctx.hash_sem._value)  # 0 while a reader holds the only permit
+            yield data
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(bu, "_read_blocks", watching)
+        results = bu.run_transfers(ctx, items, workers=4)
+
+    assert all(r.status == "ok" for r in results)
+    assert held
+    assert set(held) == {0}

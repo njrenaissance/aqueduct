@@ -8,10 +8,12 @@ Workflow, after validate:
 
 What it does:
     * Uploads only files that passed ``validate --hash`` (read from validate_results.csv) and whose SHA-256 agrees
-      with the one ``filecopy`` recorded. Before sending, each file is re-hashed and must equal the validated
-      value, so a file changed since ``validate`` is rejected, not uploaded.
-    * Each file goes up as staged blocks with Azure content validation (per-block MD5/CRC64), then one commit that
-      stores our SHA-256 (the evidence fingerprint, SPEC section 4) and the source UniqueId as blob metadata.
+      with the one ``filecopy`` recorded. The vault is looked up by name first; a new file is hashed in the same
+      pass that stages its blocks and must equal the validated value before the commit, so a file changed since
+      ``validate`` is rejected and nothing is committed.
+    * Each file goes up as staged blocks (several at once) with Azure content validation (per-block MD5/CRC64),
+      then one commit that stores our SHA-256 (the evidence fingerprint, SPEC section 4) and the source UniqueId
+      as blob metadata.
     * A file is "completed" only when the stored blob is read back and its size, SHA-256 metadata and
       Content-MD5 match - never merely because bytes arrived.
     * Idempotent: a blob already there with the same size and SHA-256 is skipped. A blob already there with a
@@ -39,10 +41,11 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,6 +67,10 @@ _HASH_CHUNK = 4 * 1024 * 1024
 _MAX_BACKOFF = 60
 _RETRYABLE = (AzureError, OSError, IntegrityError)
 _COLUMNS = ["path", "status", "size", "sha256", "blob_name", "attempts", "seconds", "detail"]
+_FLUSH_EVERY = 100  # checkpoint the results CSV every N finished files, and...
+_FLUSH_SECONDS = 30  # ...at least this often
+_PROGRESS_SECONDS = 30  # log a progress line this often while transfers run
+_LARGE_BYTES = 256 * 1024 * 1024  # announce files at least this big when they start
 _STORED = ("ok", "skip")
 _FAILED = ("fail", "rejected", "conflict")
 _SUMS_NAME = "SHA256SUMS"
@@ -80,6 +87,31 @@ class BlobConfig:
     prefix: str
 
 
+class Progress:
+    """Thread-safe files/bytes counters for the progress line."""
+
+    def __init__(self, total_files: int = 0, total_bytes: int = 0) -> None:
+        self.total_files = total_files
+        self.total_bytes = total_bytes
+        self.files_done = 0
+        self.bytes_done = 0
+        self._lock = threading.Lock()
+
+    def add_bytes(self, count: int) -> None:
+        with self._lock:
+            self.bytes_done += count
+
+    def file_done(self, extra_bytes: int = 0) -> None:
+        with self._lock:
+            self.files_done += 1
+            self.bytes_done += extra_bytes
+
+    def line(self) -> str:
+        with self._lock:
+            done, total = self.bytes_done / 1e9, self.total_bytes / 1e9
+            return f"progress: {self.files_done}/{self.total_files} files, {done:.2f}/{total:.2f} GB"
+
+
 @dataclass
 class Ctx:
     """Run-wide state shared by every transfer."""
@@ -88,6 +120,17 @@ class Ctx:
     prefix: str
     chunk: int
     max_retries: int
+    block_workers: int = 4  # blocks of one file staged concurrently
+    hash_sem: threading.Semaphore = field(default_factory=lambda: threading.BoundedSemaphore(3))
+    progress: Progress = field(default_factory=Progress)
+
+
+class _Rejected(Exception):  # noqa: N818 - an outcome, not an error: never retried
+    """The bytes read differ from the validated hash; nothing was committed."""
+
+    def __init__(self, sha256: str) -> None:
+        super().__init__("changed since validate (SHA-256 mismatch)")
+        self.sha256 = sha256
 
 
 @dataclass(frozen=True)
@@ -197,25 +240,76 @@ def _verify(props: Any, size: int, sha256: str, md5: bytes, name: str) -> None:
         raise IntegrityError(f"Content-MD5 mismatch after upload of '{name}'")
 
 
-def _stage_and_commit(ctx: Ctx, item: Item, size: int, sha256: str, md5: bytes) -> None:
-    """Stage every block (Azure validates each), prove the bytes sent are the bytes hashed, then commit."""
-    blob = ctx.container.get_blob_client(item.name)
-    sent_sha, sent_md5 = hashlib.sha256(), hashlib.md5(usedforsecurity=False)
+def _stage_blocks(ctx: Ctx, blob: Any, item: Item) -> tuple[list[BlobBlock], str, bytes, int]:
+    """Read the file once, hashing as we go, staging blocks concurrently (Azure validates each).
+
+    Returns (blocks in order, SHA-256 hex, MD5 digest, bytes sent). On any error the bytes already counted in the
+    progress line are taken back, so a retry is not double-counted.
+    """
+    sha, md5 = hashlib.sha256(), hashlib.md5(usedforsecurity=False)
+    window = threading.BoundedSemaphore(max(ctx.block_workers, 1))  # caps blocks held in memory
+    futures: list[Future[None]] = []
     blocks: list[BlobBlock] = []
-    for index, data in enumerate(_read_blocks(item.source, ctx.chunk)):
-        ident = block_id(index)
-        blob.stage_block(ident, data, validate_content=True)
-        sent_sha.update(data)
-        sent_md5.update(data)
-        blocks.append(BlobBlock(block_id=ident))
-    if sent_sha.hexdigest() != sha256:
-        raise IntegrityError(f"'{item.path}' changed while uploading (bytes sent differ from the bytes hashed)")
-    blob.commit_block_list(
-        blocks,
-        content_settings=ContentSettings(content_md5=bytearray(sent_md5.digest())),
-        metadata={"sha256": sha256, **item.metadata},
-    )
-    _verify(blob.get_blob_properties(), size, sha256, md5, item.name)
+    failed = threading.Event()
+    sent = 0
+
+    def stage(ident: str, data: bytes) -> None:
+        try:
+            blob.stage_block(ident, data, validate_content=True)
+        except BaseException:
+            failed.set()
+            raise
+        finally:
+            window.release()
+
+    def read_hashed(chunks: Iterator[bytes]) -> bytes:
+        with ctx.hash_sem:  # reading + hashing is the disk-bound part; --hash-workers caps it
+            data = next(chunks, b"")
+            sha.update(data)
+            md5.update(data)
+        return data
+
+    try:
+        with ThreadPoolExecutor(max_workers=max(ctx.block_workers, 1)) as pool:
+            chunks = _read_blocks(item.source, ctx.chunk)
+            while not failed.is_set() and (data := read_hashed(chunks)):
+                ident = block_id(len(blocks))
+                window.acquire()
+                futures.append(pool.submit(stage, ident, data))
+                blocks.append(BlobBlock(block_id=ident))
+                sent += len(data)
+                ctx.progress.add_bytes(len(data))
+        for fut in futures:
+            fut.result()
+    except BaseException:
+        ctx.progress.add_bytes(-sent)
+        raise
+    return blocks, sha.hexdigest(), md5.digest(), sent
+
+
+def _stage_and_commit(ctx: Ctx, item: Item, size: int) -> str:
+    """Stage every block while hashing, prove the bytes are the validated ones, then commit and read back.
+
+    Nothing is committed unless the single hash pass matches the validated SHA-256 (uncommitted blocks are
+    discarded by Azure). Returns the SHA-256 of what was stored.
+    """
+    blob = ctx.container.get_blob_client(item.name)
+    blocks, sha256, md5, sent = _stage_blocks(ctx, blob, item)
+    try:
+        if item.expected_sha256 and sha256 != item.expected_sha256:
+            raise _Rejected(sha256)
+        if sent != size:
+            raise IntegrityError(f"'{item.path}' changed while uploading (bytes sent differ from its size)")
+        blob.commit_block_list(
+            blocks,
+            content_settings=ContentSettings(content_md5=bytearray(md5)),
+            metadata={"sha256": sha256, **item.metadata},
+        )
+        _verify(blob.get_blob_properties(), size, sha256, md5, item.name)
+    except BaseException:
+        ctx.progress.add_bytes(-sent)
+        raise
+    return sha256
 
 
 def _backoff_seconds(attempt: int) -> int:
@@ -239,12 +333,38 @@ def _existing_properties(ctx: Ctx, name: str) -> Any | None:
         return None
 
 
-def _try_upload(ctx: Ctx, item: Item, size: int, sha256: str, md5: bytes) -> UploadResult:
+def _recheck_committed(ctx: Ctx, item: Item, size: int, existing: Any) -> str:
+    """Re-verify a blob an earlier attempt already committed, instead of committing over it."""
+    with ctx.hash_sem:
+        sha256, md5 = hash_file_pair(item.source)
+    if item.expected_sha256 and sha256 != item.expected_sha256:
+        raise _Rejected(sha256)
+    _verify(existing, size, sha256, md5, item.name)
+    return sha256
+
+
+def _commit_or_recheck(ctx: Ctx, item: Item, size: int, attempt: int) -> str:
+    """Stage and commit; on a retry, first check whether the previous attempt's commit actually landed.
+
+    The commit can succeed while the read-back fails, and the vault is immutable, so committing again would
+    turn a preserved file into a failure.
+    """
+    existing = _existing_properties(ctx, item.name) if attempt > 1 else None
+    if existing is not None:
+        return _recheck_committed(ctx, item, size, existing)
+    return _stage_and_commit(ctx, item, size)
+
+
+def _try_upload(ctx: Ctx, item: Item, size: int) -> UploadResult:
     started = time.monotonic()
     attempts = ctx.max_retries + 1
+    sha256 = item.expected_sha256
     for attempt in range(1, attempts + 1):
         try:
-            _stage_and_commit(ctx, item, size, sha256, md5)
+            sha256 = _commit_or_recheck(ctx, item, size, attempt)
+        except _Rejected as exc:
+            log.error("REJECT  %s - changed since validate (SHA-256 differs from the validated value)", item.path)
+            return _result(item, "rejected", size, exc.sha256, 0, 0.0, str(exc))
         except _RETRYABLE as exc:
             if attempt >= attempts:
                 log.error("FAIL  %s - %s (after %d tries)", item.path, exc, attempt)
@@ -259,32 +379,115 @@ def _try_upload(ctx: Ctx, item: Item, size: int, sha256: str, md5: bytes) -> Upl
     return _result(item, "fail", size, sha256, attempts, 0.0, "logic error")  # unreachable
 
 
-def transfer(ctx: Ctx, item: Item) -> UploadResult:
-    """Put one file in the vault: re-hash, skip if already preserved, refuse to overwrite, else send and verify."""
-    if not item.source.exists():
-        log.error("FAIL  %s - source file not found: %s", item.path, item.source)
-        return _result(item, "fail", 0, item.expected_sha256, 0, 0.0, f"source file not found: {item.source}")
-    size = item.source.stat().st_size
-    sha256, md5 = hash_file_pair(item.source)
+def _compare_existing(ctx: Ctx, item: Item, size: int, existing: Any) -> UploadResult:
+    """A blob is already at this name: skip if it is the same file, otherwise refuse to overwrite it.
+
+    Only a same-size blob is worth reading the local file for; a different size is a conflict on its own.
+    """
+    if existing.size != size:
+        log.error("CONFLICT  %s - a different blob already exists here; the vault is not overwritten", item.path)
+        return _result(item, "conflict", size, item.expected_sha256, 0, 0.0, "a blob with a different size exists")
+    try:
+        with ctx.hash_sem:
+            sha256, _ = hash_file_pair(item.source)
+    except OSError as exc:
+        log.error("FAIL  %s - could not read the source file: %s", item.path, exc)
+        return _result(item, "fail", size, item.expected_sha256, 0, 0.0, f"could not read the source file: {exc}")
     if item.expected_sha256 and sha256 != item.expected_sha256:
         log.error("REJECT  %s - changed since validate (SHA-256 differs from the validated value)", item.path)
         return _result(item, "rejected", size, sha256, 0, 0.0, "changed since validate (SHA-256 mismatch)")
-    try:
-        existing = _existing_properties(ctx, item.name)
-    except AzureError as exc:
-        return _result(item, "fail", size, sha256, 0, 0.0, f"could not check the vault: {exc}")
-    if existing is None:
-        return _try_upload(ctx, item, size, sha256, md5)
-    if existing.size == size and (existing.metadata or {}).get("sha256") == sha256:
+    if (existing.metadata or {}).get("sha256") == sha256:
         log.info("skip  %s (already preserved, hash matches)", item.path)
         return _result(item, "skip", size, sha256, 0, 0.0)
     log.error("CONFLICT  %s - a different blob already exists at this name; the vault is not overwritten", item.path)
     return _result(item, "conflict", size, sha256, 0, 0.0, "a blob with a different hash already exists")
 
 
-def run_transfers(ctx: Ctx, items: Sequence[Item], workers: int) -> list[UploadResult]:
-    with ThreadPoolExecutor(max_workers=max(workers, 1)) as pool:
-        return list(pool.map(lambda item: transfer(ctx, item), items))
+def _lookup_with_retries(ctx: Ctx, item: Item) -> Any | None:
+    """The vault lookup, retried like the upload: a transient 429/503 must not fail the file outright."""
+    for attempt in range(1, ctx.max_retries + 2):
+        try:
+            return _existing_properties(ctx, item.name)
+        except AzureError as exc:
+            if attempt > ctx.max_retries:
+                raise
+            backoff = _backoff_seconds(attempt)
+            log.warning("retry %s - vault lookup: %s (try %d; %ds)", item.path, exc, attempt, backoff)
+            time.sleep(backoff)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _transfer(ctx: Ctx, item: Item) -> UploadResult:
+    if not item.source.exists():
+        log.error("FAIL  %s - source file not found: %s", item.path, item.source)
+        return _result(item, "fail", 0, item.expected_sha256, 0, 0.0, f"source file not found: {item.source}")
+    size = item.source.stat().st_size
+    try:
+        existing = _lookup_with_retries(ctx, item)
+    except AzureError as exc:
+        return _result(item, "fail", size, item.expected_sha256, 0, 0.0, f"could not check the vault: {exc}")
+    if existing is not None:
+        return _compare_existing(ctx, item, size, existing)
+    if size >= _LARGE_BYTES:
+        log.info("start %s (%s B)", item.path, f"{size:,}")
+    return _try_upload(ctx, item, size)
+
+
+def transfer(ctx: Ctx, item: Item) -> UploadResult:
+    """Put one file in the vault: look it up by name first, skip or refuse if present, else hash while sending."""
+    result = _transfer(ctx, item)
+    # Bytes of an uploaded file were counted as they were staged; everything else is credited in full now.
+    ctx.progress.file_done(0 if result.status == "ok" else result.size)
+    return result
+
+
+class _ProgressReporter:
+    """Logs a progress line on a timer while transfers run, so a long file does not look hung."""
+
+    def __init__(self, progress: Progress, interval: float = _PROGRESS_SECONDS) -> None:
+        self._progress = progress
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            log.info(self._progress.line())
+
+    def __enter__(self) -> _ProgressReporter:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._stop.set()
+        self._thread.join()
+
+
+def _local_size(item: Item) -> int:
+    try:
+        return item.source.stat().st_size
+    except OSError:
+        return 0
+
+
+def run_transfers(
+    ctx: Ctx, items: Sequence[Item], workers: int, on_result: Callable[[UploadResult], None] | None = None
+) -> list[UploadResult]:
+    """Transfer every item concurrently; results come back in item order, ``on_result`` fires as each finishes."""
+    ctx.progress = Progress(len(items), sum(_local_size(i) for i in items))
+    pool = ThreadPoolExecutor(max_workers=max(workers, 1))
+    try:
+        with _ProgressReporter(ctx.progress):
+            futures = {pool.submit(transfer, ctx, item): n for n, item in enumerate(items)}
+            results: list[UploadResult | None] = [None] * len(items)
+            for fut in as_completed(futures):
+                results[futures[fut]] = result = fut.result()
+                if on_result:
+                    on_result(result)
+        log.info(ctx.progress.line())
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    return [r for r in results if r is not None]
 
 
 # --- audit bundle ------------------------------------------------------------------
@@ -350,8 +553,12 @@ def _run_id() -> str:
 # --- results ------------------------------------------------------------------------
 
 
-def _write_results(results_path: Path, results: Sequence[UploadResult], run_metadata: dict, destination: str) -> None:
-    with open(results_path, "w", newline="", encoding="utf-8-sig") as fh:
+def _write_results_csv(
+    results_path: Path, results: Sequence[UploadResult], run_metadata: Mapping[str, Any], destination: str
+) -> None:
+    """Write the results CSV atomically (temp file + replace), so an interruption never leaves half a file."""
+    temp = results_path.with_name(results_path.name + ".tmp")
+    with open(temp, "w", newline="", encoding="utf-8-sig") as fh:
         header = metadata.format_metadata_header(
             tool=run_metadata["tool"],
             version=run_metadata["tool_version"],
@@ -366,7 +573,32 @@ def _write_results(results_path: Path, results: Sequence[UploadResult], run_meta
         writer.writerow(_COLUMNS)
         for r in results:
             writer.writerow([r.path, r.status, r.size, r.sha256, r.blob_name, r.attempts, f"{r.seconds:.1f}", r.detail])
+    os.replace(temp, results_path)
+
+
+def _write_results(results_path: Path, results: Sequence[UploadResult], run_metadata: dict, destination: str) -> None:
+    _write_results_csv(results_path, results, run_metadata, destination)
     metadata.write_metadata_sidecar(results_path, run_metadata)
+
+
+class _Checkpoint:
+    """Collects finished results and rewrites the results CSV every N files or every few seconds."""
+
+    def __init__(self, results_path: Path, run_meta: Mapping[str, Any], destination: str) -> None:
+        self._path = results_path
+        self._meta = {**run_meta, "completed_at_utc": "in progress"}
+        self._destination = destination
+        self._results: list[UploadResult] = []
+        self._last = time.monotonic()
+
+    def __call__(self, result: UploadResult) -> None:
+        self._results.append(result)
+        if len(self._results) % _FLUSH_EVERY == 0 or time.monotonic() - self._last >= _FLUSH_SECONDS:
+            self.flush()
+
+    def flush(self) -> None:
+        _write_results_csv(self._path, self._results, self._meta, self._destination)
+        self._last = time.monotonic()
 
 
 def _recorded(entry: UploadEntry, reason: str) -> UploadResult:
@@ -409,6 +641,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--dest-prefix", default="", help=f"<matter-id>/<collection-id> folder (or ${_ENV_PREFIX})")
     ap.add_argument("--audit-file", action="append", default=[], help="extra file for _audit/ (repeatable)")
     ap.add_argument("--concurrency", type=int, default=4)
+    ap.add_argument("--block-workers", type=int, default=4, help="blocks of one file staged at once (default 4)")
+    ap.add_argument("--hash-workers", type=int, default=3, help="files hashed at once, to spare the disk (default 3)")
     ap.add_argument("--retries", type=int, default=2)
     ap.add_argument("--chunk-mb", type=float, default=4.0)
     ap.add_argument("--operator", default=None, help="operator identity for the record (opt-in; default unspecified)")
@@ -444,13 +678,21 @@ def _preserve_audit(
 
 def _run(args: argparse.Namespace, cfg: BlobConfig, manifest: dict) -> int:
     entries, rejected = load_entries(manifest, Path(args.validate_results), load_reference(Path(args.verify_against)))
-    ctx = Ctx(open_container(cfg), cfg.prefix, max(int(args.chunk_mb * 1024 * 1024), 1), args.retries)
+    chunk = max(int(args.chunk_mb * 1024 * 1024), 1)
+    hash_sem = threading.BoundedSemaphore(max(args.hash_workers, 1))
+    ctx = Ctx(open_container(cfg), cfg.prefix, chunk, args.retries, max(args.block_workers, 1), hash_sem)
     items = [data_item(cfg.prefix, e, Path(args.source)) for e in entries]
+    destination = f"{cfg.container}/{cfg.prefix}"
     with metadata.timed_run("upload", args.operator) as run_meta:
         log.info("Uploading %d file(s) to %s/%s ...", len(items), cfg.container, cfg.prefix)
-        results = run_transfers(ctx, items, args.concurrency)
+        checkpoint = _Checkpoint(Path(args.results), run_meta, destination)
+        try:
+            results = run_transfers(ctx, items, args.concurrency, on_result=checkpoint)
+        except BaseException:
+            checkpoint.flush()  # an interrupted run still leaves a record of what finished
+            raise
     results += [_recorded(e, reason) for e, reason in rejected]
-    _write_results(Path(args.results), results, run_meta, f"{cfg.container}/{cfg.prefix}")
+    _write_results(Path(args.results), results, run_meta, destination)
     audit = _preserve_audit(ctx, args, run_meta, results, cfg)
     return _summarize(results, audit, Path(args.results))
 
