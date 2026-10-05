@@ -167,10 +167,18 @@ uv run upload --account-url https://contoso.blob.core.windows.net --container va
 What it does:
 
 - Uploads only files that passed `validate --hash` **and** whose hash matches what
-  `filecopy` recorded. Each file is re-hashed first; a file that changed since
-  `validate` is **rejected**, not uploaded.
-- Sends each file in blocks that Azure checks on arrival, then stores the file's
-  **SHA-256** (the evidence fingerprint) and its source `UniqueId` on the blob.
+  `filecopy` recorded. Each file is hashed as it is read for upload and compared to the
+  validated hash before anything is committed; a file that changed since `validate` is
+  **rejected**, not uploaded.
+- Looks the blob up by name **before** reading the local file, so a re-run only reads
+  the files whose blob already exists at the same size (to skip or flag them).
+- Sends each file in blocks, several at once (`--block-workers`, default 4), that Azure
+  checks on arrival, then stores the file's **SHA-256** (the evidence fingerprint) and
+  its source `UniqueId` on the blob. `--hash-workers` (default 3) caps how many files
+  are hashed at once.
+- Logs `progress: N/M files, X/Y GB` every 30 seconds and announces big files as they
+  start; `upload_results.csv` is checkpointed every 100 files or 30 seconds, so an
+  interrupted run still leaves a record.
 - A file counts as done only when the stored blob is read back and its size, SHA-256
   and Content-MD5 match. Anything else is a `fail`.
 - Safe to re-run: files already preserved with the same hash are skipped. A blob that
