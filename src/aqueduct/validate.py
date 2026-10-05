@@ -62,6 +62,29 @@ _COLUMNS = [
     "corrupted_segments",
 ]
 
+# What each outcome in validate_results.csv means; rendered into the run's summary page. A file is counted once,
+# under the first of: its ``status`` (when not ok), a hash mismatch, a segment mismatch, else ok.
+STATUS_DEFINITIONS = {
+    "ok": "Present at the manifest size; any recorded SHA-256 and segment hashes agree.",
+    "missing": "Listed in the manifest but not on disk (an unfinished .part file does not count).",
+    "mismatch": "On disk, but its size differs from the manifest.",
+    "extra": "On disk but not listed in the manifest.",
+    "hash mismatch": "Right size, but its SHA-256 differs from the one filecopy recorded.",
+    "segment mismatch": "Right size, but one or more segment hashes differ from the sidecar's; the file is corrupted.",
+}
+FAILED_STATUSES = ("missing", "mismatch", "extra", "hash mismatch", "segment mismatch")
+
+
+def classify_row(row: dict[str, str]) -> str:
+    """The single STATUS_DEFINITIONS outcome a results row counts under."""
+    if row["status"] != "ok":
+        return row["status"]
+    if row.get("hash_check") == "mismatch":
+        return "hash mismatch"
+    if row.get("segment_check") == "mismatch":
+        return "segment mismatch"
+    return "ok"
+
 
 class _ProgressReporter:
     """Prints progress lines by file count and on a timer; with ``with_bytes`` also by bytes hashed."""

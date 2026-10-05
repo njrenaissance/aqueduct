@@ -261,7 +261,7 @@ on a server.
   download to SharePoint (see §7 and ADR-0012); it is not part of the pipeline stages.
 - **Stage 2 exists** as `upload`: it sends the validated local download to the immutable
   Blob vault, verifies size + SHA-256 + `Content-MD5` after commit, and stores the
-  acquisition record (`manifest`, results CSVs, `SHA256SUMS`, `custody.json`) under
+  acquisition record (`manifest`, results CSVs, `summary.md`, `SHA256SUMS`, `custody.json`) under
   `_audit/` beside the evidence ([ADR-0013](adr/0013-UPLOAD-TO-IMMUTABLE-BLOB.md)).
   Streaming without a local copy (§10, ADR-0008) is not built yet.
 - **Stages 3–4 are new components** to build against this spec: classifier/router and
