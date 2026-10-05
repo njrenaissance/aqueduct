@@ -11,6 +11,8 @@ import pytest
 
 from aqueduct import validate
 
+pytestmark = pytest.mark.unit
+
 
 def _manifest(items):
     return {"items": items}
@@ -319,3 +321,131 @@ def test_validate_prints_a_progress_line_every_ten_files(tmp_path, capsys):
     assert "...10/25 checked" in out
     assert "...20/25 checked" in out
     assert "...25/25 checked" not in out
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _hash_dir(tmp_path, sizes: dict[str, int]):
+    dest = tmp_path / "dl"
+    dest.mkdir()
+    for name, size in sizes.items():
+        (dest / name).write_bytes(b"x" * size)
+    items = [{"path": name, "type": "file", "size": size} for name, size in sizes.items()]
+    return dest, items
+
+
+def _run_hash(tmp_path, dest, items, clock, reference=None):
+    return validate.validate(
+        _manifest(items),
+        dest,
+        do_hash=True,
+        results_path=tmp_path / "r.csv",
+        reference=reference or {},
+        clock=clock,
+    )
+
+
+def _progress_lines(out: str) -> list[str]:
+    return [line.strip() for line in out.splitlines() if line.startswith("  ...")]
+
+
+@pytest.mark.parametrize(
+    ("with_bytes", "total_bytes", "done_bytes", "expected"),
+    [
+        pytest.param(True, 91_500_000_000, 38_200_000_000, "...3/1,380 files, 38.2 GB of 91.5 GB (41%)", id="bytes"),
+        pytest.param(True, 0, 0, "...3/1,380 files, 0.0 GB of 0.0 GB (100%)", id="zero_total_no_divide_by_zero"),
+        pytest.param(False, 5, 0, "...3/1380 checked", id="size_only_line_unchanged"),
+    ],
+)
+def test_progress_line_format(with_bytes, total_bytes, done_bytes, expected):
+    reporter = validate._ProgressReporter(1380, total_bytes, with_bytes, clock=_FakeClock(), every=10_000)
+    reporter.add_bytes(done_bytes)
+    for _ in range(3):
+        reporter.file_done(0)
+    assert reporter.line().strip() == expected
+
+
+def test_hash_progress_every_ten_files_with_frozen_clock(tmp_path, capsys):
+    dest, items = _hash_dir(tmp_path, {f"f{i}.txt": 1 for i in range(25)})
+
+    _run_hash(tmp_path, dest, items, _FakeClock())
+
+    lines = _progress_lines(capsys.readouterr().out)
+    assert [ln.split(" files")[0] for ln in lines] == ["...10/25", "...20/25"]
+    assert lines[0].endswith("(40%)")
+
+
+def test_hash_progress_on_timer_inside_one_large_file(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(validate, "_HASH_CHUNK", 10)
+    dest, items = _hash_dir(tmp_path, {"big.bin": 40})
+    clock = _FakeClock()
+    real_add = validate._ProgressReporter.add_bytes
+
+    def ticking_add(self, count):
+        clock.now += 20  # 20 s per chunk: due after every second chunk
+        real_add(self, count)
+
+    monkeypatch.setattr(validate._ProgressReporter, "add_bytes", ticking_add)
+
+    _run_hash(tmp_path, dest, items, clock)
+
+    lines = _progress_lines(capsys.readouterr().out)
+    assert [ln.split(" files")[0] for ln in lines] == ["...0/1", "...0/1"]  # chunks 2 and 4, none on 1 and 3
+    assert lines[0].endswith("(50%)")
+    assert lines[1].endswith("(100%)")
+
+
+def test_timer_resets_after_each_line():
+    clock = _FakeClock()
+    reporter = validate._ProgressReporter(5, 100, True, clock=clock, interval=30, every=1000)
+    clock.now = 31
+    reporter.add_bytes(1)  # emits, resets the timer
+    clock.now = 50
+    reporter.add_bytes(1)  # only 19 s since the last line: silent
+    assert reporter._last == 31
+
+
+@pytest.mark.parametrize(
+    ("do_hash", "name", "announced"),
+    [
+        pytest.param(True, "big.bin", True, id="large_hashed_file_announced"),
+        pytest.param(True, "small.bin", False, id="small_file_not_announced"),
+        pytest.param(False, "big.bin", False, id="not_announced_without_hash"),
+    ],
+)
+def test_large_file_announced_when_hashing_starts(tmp_path, capsys, monkeypatch, do_hash, name, announced):
+    monkeypatch.setattr(validate, "_LARGE_BYTES", 100)
+    dest, items = _hash_dir(tmp_path, {"big.bin": 200, "small.bin": 5})
+    items = [i for i in items if i["path"] == name]
+
+    validate.validate(
+        _manifest(items), dest, do_hash=do_hash, results_path=tmp_path / "r.csv", reference={}, clock=_FakeClock()
+    )
+
+    assert (f"hashing {name}" in capsys.readouterr().out) is announced
+
+
+def test_bytes_reach_100_percent_with_missing_and_mismatched_files(tmp_path, capsys):
+    sizes = {f"ok{i}.txt": 1 for i in range(8)}
+    dest, items = _hash_dir(tmp_path, {**sizes, "short.txt": 3})
+    items[-1]["size"] = 8  # on disk: 3
+    items.append({"path": "gone.txt", "type": "file", "size": 2})  # missing; 10 files in all
+
+    _run_hash(tmp_path, dest, items, _FakeClock())
+
+    lines = _progress_lines(capsys.readouterr().out)
+    assert lines[-1].endswith("(100%)")
+
+
+def test_progress_does_not_change_results_csv(tmp_path):
+    dest, items = _hash_dir(tmp_path, {"a.txt": 5})
+    _run_hash(tmp_path, dest, items, _FakeClock(), reference={"a.txt": hashlib.sha256(b"x" * 5).hexdigest()})
+
+    row = _read_csv_rows(tmp_path / "r.csv")[0]
+    assert (row["status"], row["sha256"], row["hash_check"]) == ("ok", hashlib.sha256(b"x" * 5).hexdigest(), "ok")

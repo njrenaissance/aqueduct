@@ -38,7 +38,9 @@ import hashlib
 import json
 import logging
 import sys
+import time
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 
 from aqueduct import metadata
@@ -46,7 +48,9 @@ from aqueduct import metadata
 log = logging.getLogger("validate")
 
 _HASH_CHUNK = 4 * 1024 * 1024
-_PROGRESS_EVERY = 10  # print a progress line every N files
+_PROGRESS_EVERY = 10  # print a progress line every N files, and...
+_PROGRESS_SECONDS = 30  # ...at least this often (also mid-file, so one huge file does not look hung)
+_LARGE_BYTES = 256 * 1024 * 1024  # announce files at least this big when hashing starts
 _COLUMNS = [
     "path",
     "status",
@@ -59,11 +63,65 @@ _COLUMNS = [
 ]
 
 
-def _sha256_file(path: Path) -> str:
+class _ProgressReporter:
+    """Prints progress lines by file count and on a timer; with ``with_bytes`` also by bytes hashed."""
+
+    def __init__(
+        self,
+        total_files: int,
+        total_bytes: int,
+        with_bytes: bool,
+        clock: Callable[[], float] = time.monotonic,
+        interval: float = _PROGRESS_SECONDS,
+        every: int = _PROGRESS_EVERY,
+    ) -> None:
+        self._total_files = total_files
+        self._total_bytes = total_bytes
+        self._with_bytes = with_bytes
+        self._clock = clock
+        self._interval = interval
+        self._every = every
+        self._last = clock()
+        self._files_done = 0
+        self._bytes_done = 0
+        self._file_credit = 0  # bytes of the current file already counted by add_bytes
+
+    def line(self) -> str:
+        if not self._with_bytes:
+            return f"  ...{self._files_done}/{self._total_files} checked"
+        done, total = self._bytes_done / 1e9, self._total_bytes / 1e9
+        pct = int(100 * self._bytes_done / self._total_bytes) if self._total_bytes else 100
+        return f"  ...{self._files_done:,}/{self._total_files:,} files, {done:.1f} GB of {total:.1f} GB ({pct}%)"
+
+    def file_started(self, rel: str, size: int) -> None:
+        if self._with_bytes and size >= _LARGE_BYTES:
+            print(f"  hashing {rel} ({size:,} B)...", flush=True)
+
+    def add_bytes(self, count: int) -> None:
+        self._bytes_done += count
+        self._file_credit += count
+        self._emit_if_due(force=False)
+
+    def file_done(self, size: int) -> None:
+        self._files_done += 1
+        self._bytes_done += max(size - self._file_credit, 0)  # unhashed files still reach 100%
+        self._file_credit = 0
+        self._emit_if_due(force=self._files_done % self._every == 0)
+
+    def _emit_if_due(self, force: bool) -> None:
+        now = self._clock()
+        if force or now - self._last >= self._interval:
+            print(self.line(), flush=True)
+            self._last = now
+
+
+def _sha256_file(path: Path, on_chunk: Callable[[int], None] | None = None) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for block in iter(lambda: f.read(_HASH_CHUNK), b""):
             h.update(block)
+            if on_chunk:
+                on_chunk(len(block))
     return h.hexdigest()
 
 
@@ -107,9 +165,10 @@ def _row(
     }
 
 
-def _verify_hash(rel: str, target: Path, reference: dict[str, str]) -> tuple[str, str]:
+def _verify_hash(rel: str, target: Path, reference: dict[str, str], progress: _ProgressReporter) -> tuple[str, str]:
     """Compute SHA-256 and compare to any recorded value. Returns (digest, check)."""
-    digest = _sha256_file(target)
+    progress.file_started(rel, target.stat().st_size)
+    digest = _sha256_file(target, progress.add_bytes)
     want = reference.get(rel)
     if not want:
         return digest, ""
@@ -170,7 +229,7 @@ def _verify_segments(rel: str, target: Path, segment_data: dict) -> tuple[str, s
     return "ok", ""
 
 
-def _check_file(item: dict, dest: Path, do_hash: bool, reference: dict[str, str]) -> dict:
+def _check_file(item: dict, dest: Path, do_hash: bool, reference: dict[str, str], progress: _ProgressReporter) -> dict:
     """One manifest file → a result row (prints any problem it finds)."""
     rel = item["path"]
     target = dest / rel
@@ -183,7 +242,7 @@ def _check_file(item: dict, dest: Path, do_hash: bool, reference: dict[str, str]
     if actual != expected:
         print(f"MISMATCH  {rel}  expected {expected:,} B, on disk {actual:,} B")
         return _row(rel, "mismatch", expected, actual)
-    digest, hash_check = _verify_hash(rel, target, reference) if do_hash else ("", "")
+    digest, hash_check = _verify_hash(rel, target, reference, progress) if do_hash else ("", "")
     # Check segments if sidecar is present
     segment_check = ""
     corrupted_segments = ""
@@ -239,6 +298,7 @@ def validate(
     results_path: Path,
     reference: dict[str, str],
     operator_identity: str | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> int:
     with metadata.timed_run("validate", operator_identity) as run_metadata:
         files = [i for i in manifest["items"] if i["type"] == "file"]
@@ -249,11 +309,11 @@ def validate(
             mode = f"size + SHA-256 (verifying vs {len(reference)} recorded)" if reference else "size + SHA-256"
         print(f"Validating {len(files)} files against {dest}/ ({mode})...\n", flush=True)
 
+        progress = _ProgressReporter(len(files), sum(i["size"] for i in files), do_hash, clock)
         rows: list[dict] = []
-        for n, item in enumerate(files, 1):
-            rows.append(_check_file(item, dest, do_hash, reference))
-            if n % _PROGRESS_EVERY == 0:
-                print(f"  ...{n}/{len(files)} checked", flush=True)
+        for item in files:
+            rows.append(_check_file(item, dest, do_hash, reference, progress))
+            progress.file_done(item["size"])
         rows += _scan_extras(dest, manifest_paths)
 
         c = Counter(r["status"] for r in rows)
