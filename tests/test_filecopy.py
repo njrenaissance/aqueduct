@@ -115,3 +115,14 @@ def test_write_segment_sidecar_empty_segments(tmp_path: Path):
     filecopy._write_segment_sidecar(target, [], 100, 1024)
     sidecar_path = tmp_path / "file.bin.segments.json"
     assert not sidecar_path.exists()
+
+
+def test_prior_hashes_reads_current_results_schema(tmp_path: Path):
+    """Regression: a results CSV written with the segment columns must load and yield (path, size) -> sha256."""
+    results = tmp_path / "filecopy_results.csv"
+    row = ["a/b.pdf", "ok", "10", "1", "1.0", "ab" * 32, "1", "1073741824", "a/b.pdf.segments.json", ""]
+    filecopy._write_results(results, {"a/b.pdf": row})
+
+    prior = filecopy._load_prior_rows(results)
+
+    assert filecopy._prior_hashes(prior) == {("a/b.pdf", 10): "ab" * 32}

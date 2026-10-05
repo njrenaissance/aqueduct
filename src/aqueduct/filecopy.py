@@ -426,7 +426,9 @@ def _load_prior_rows(results_path: Path) -> dict[str, list]:
 def _prior_hashes(prior_rows: dict[str, list]) -> dict[tuple[str, int], str]:
     """Derive (path, size) -> sha256 from prior rows, to skip re-hashing finished files."""
     out: dict[tuple[str, int], str] = {}
-    for path, _status, size, _att, _sec, sha, _detail in prior_rows.values():
+    path_i, size_i, sha_i = (_RESULT_COLUMNS.index(c) for c in ("path", "size_bytes", "sha256"))
+    for row in prior_rows.values():
+        path, size, sha = row[path_i], row[size_i], row[sha_i]
         if sha and size.isdigit():
             out[(path, int(size))] = sha
     return out
