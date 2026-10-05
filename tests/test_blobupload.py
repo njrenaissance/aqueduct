@@ -18,6 +18,7 @@ import pytest
 from azure.core.exceptions import ResourceNotFoundError, ServiceRequestError
 
 from aqueduct import blobupload as bu
+from aqueduct import filecopy
 from aqueduct.errors import ConfigError
 from aqueduct.validated import UploadEntry
 
@@ -542,6 +543,7 @@ def test_main_uploads_data_then_writes_results_and_audit_bundle(workspace) -> No
     assert f"{_PREFIX}/data/a.pdf" in names
     audit = {n.rsplit("/", 1)[1] for n in names if "/_audit/" in n}
     assert {"manifest.json", "validate_results.csv", "upload_results.csv", "SHA256SUMS", "custody.json"} <= audit
+    assert "summary.md" in audit
     assert (workspace.root / "upload_results.csv.metadata.json").exists()
 
 
@@ -569,6 +571,51 @@ def test_main_sha256sums_in_vault_matches_local_file_hashes(workspace) -> None:
     sums_name = next(n for n in workspace.container.blobs if n.endswith("/SHA256SUMS"))
     text = workspace.container.blobs[sums_name].data.decode()
     assert f"{_sha(workspace.payload)}  data/a.pdf" in text.splitlines()
+
+
+def _write_filecopy_results(path: Path, rows: list[tuple[str, str]]) -> None:
+    with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(filecopy._RESULT_COLUMNS)
+        for rel, status in rows:
+            writer.writerow([rel, status, 5, 1, 0.1, "", 0, 0, "", ""])
+
+
+def test_main_summary_page_is_written_listed_in_sha256sums_and_states_the_outcome(workspace) -> None:
+    _write_filecopy_results(workspace.root / "filecopy_results.csv", [("a.pdf", "ok")])
+    bu.main(workspace.argv)
+
+    page = (workspace.root / "summary.md").read_text(encoding="utf-8")
+    sums = (workspace.root / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+    assert f"{_sha(page.encode())}  _audit/summary.md" in sums
+    assert "**Overall: PASS**" in page
+    assert "| Uploaded | 1 | 1 | 0 | none |" in page
+    assert f"`vault/{_PREFIX}`" in page
+    assert bu.data_digest([bu.UploadResult("a.pdf", "ok", 5, _sha(workspace.payload), "", 1, 0.0)]) in page
+
+
+def test_main_summary_page_reports_a_rejected_file_by_status(workspace) -> None:
+    _write_validate_results(workspace.root / "validate_results.csv", [])
+
+    bu.main(workspace.argv)
+
+    page = (workspace.root / "summary.md").read_text(encoding="utf-8")
+    assert "**Overall: FAIL**" in page
+    assert "rejected: 1" in page
+
+
+@pytest.mark.parametrize("name", ["summary.md", "SHA256SUMS", "custody.json"])
+def test_main_refuses_an_audit_file_that_would_collide_with_a_generated_one(
+    workspace, tmp_path: Path, name: str
+) -> None:
+    clash = tmp_path / "extra" / name
+    clash.parent.mkdir()
+    clash.write_text("x")
+
+    code = bu.main([*workspace.argv, "--audit-file", str(clash)])
+
+    assert code == 2
+    assert workspace.container.blobs == {}
 
 
 def test_main_rerun_skips_data_and_adds_a_new_audit_folder_without_conflict(workspace, mocker) -> None:

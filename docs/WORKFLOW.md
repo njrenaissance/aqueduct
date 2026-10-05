@@ -186,9 +186,17 @@ What it does:
 - Finally stores the **acquisition record** beside the evidence in
   `_audit/<run-id>/`: `manifest.json`/`.csv`, `filecopy_results.csv`,
   `validate_results.csv`, `upload_results.csv` (each with its `.metadata.json`
-  sidecar), a `SHA256SUMS` file (verify any file later with `sha256sum -c`), and
+  sidecar), `summary.md`, a `SHA256SUMS` file (verify any file later with `sha256sum -c`), and
   `custody.json`, which records the hash of `SHA256SUMS`. Each run adds its own
   `<run-id>` folder; earlier ones are never touched. Add more with `--audit-file`.
+
+`summary.md` is the one page to read first: overall PASS/FAIL, the vault destination,
+total bytes, and a table of how many files were downloaded, validated and uploaded, with
+the failures broken down by status (missing, mismatch, hash mismatch, extra, rejected,
+conflict, ...). A **Definitions** section explains every status as the tool defined it
+when the page was written. A stage with no results file shows as "not run". The page is
+listed in `SHA256SUMS`, so it cannot also carry that file's hash; it shows the hash of the
+`data/` lines instead, and the run prints the full `SHA256SUMS` hash for you to record.
 
 **Write down the SHA-256 of `SHA256SUMS`** (it is in `custody.json`) somewhere outside
 the vault — a ticket or email. It anchors the whole record. This trail is not the

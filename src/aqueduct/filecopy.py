@@ -47,6 +47,7 @@ import json
 import logging
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
@@ -403,6 +404,14 @@ _RESULT_COLUMNS = [
 _FLUSH_EVERY = 100  # checkpoint the results CSV every N completed files, and...
 _FLUSH_SECONDS = 30  # ...at least this often (so the slow big-file phase still persists)
 
+# What each ``status`` in filecopy_results.csv means; rendered into the run's summary page.
+STATUS_DEFINITIONS = {
+    "ok": "Downloaded in this run, at the size the manifest lists.",
+    "skip": "Already present at the manifest size from an earlier run; not downloaded again.",
+    "fail": "Not downloaded after all retries (see the detail column of filecopy_results.csv).",
+}
+FAILED_STATUSES = ("fail",)
+
 
 def _load_prior_rows(results_path: Path) -> dict[str, list]:
     """A prior run's result rows, keyed by path, so an interrupted/resumed run keeps
@@ -424,6 +433,15 @@ def _load_prior_rows(results_path: Path) -> dict[str, list]:
         log.warning("Ignoring prior results %s: unreadable (%s); resume state discarded", results_path, exc)
         return {}
     return rows
+
+
+def status_counts(results_path: Path) -> dict[str, int] | None:
+    """Rows per status in a finished results CSV, or None when there is no readable record (stage not run)."""
+    rows = _load_prior_rows(results_path)
+    if not rows:
+        return None
+    status_i = _RESULT_COLUMNS.index("status")
+    return dict(Counter(row[status_i] for row in rows.values() if len(row) > status_i))
 
 
 def _prior_hashes(prior_rows: dict[str, list]) -> dict[tuple[str, int], str]:

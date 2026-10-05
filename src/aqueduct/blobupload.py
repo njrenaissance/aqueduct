@@ -19,7 +19,8 @@ What it does:
     * Idempotent: a blob already there with the same size and SHA-256 is skipped. A blob already there with a
       *different* hash is a ``conflict`` and is never overwritten (the container is immutable).
     * Then it preserves the acquisition record beside the evidence, under ``<prefix>/_audit/<run-id>/``: the
-      manifest, filecopy/validate/upload results, a portable ``SHA256SUMS`` and a ``custody.json`` binding it.
+      manifest, filecopy/validate/upload results, a one-page ``summary.md``, a portable ``SHA256SUMS`` and a
+      ``custody.json`` binding it.
     * Auth is the operator's own Azure identity (``DefaultAzureCredential``); no keys, SAS tokens or secrets.
 
 Layout (one ``--dest-prefix`` per collection; never reuse one):
@@ -56,7 +57,7 @@ from azure.core.exceptions import AzureError, ResourceNotFoundError
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobBlock, BlobServiceClient, ContainerClient, ContentSettings
 
-from aqueduct import metadata
+from aqueduct import metadata, summary
 from aqueduct.errors import AqueductError, ConfigError, IntegrityError
 from aqueduct.validate import _load_reference as load_reference
 from aqueduct.validated import UploadEntry, load_entries
@@ -73,7 +74,19 @@ _PROGRESS_SECONDS = 30  # log a progress line this often while transfers run
 _LARGE_BYTES = 256 * 1024 * 1024  # announce files at least this big when they start
 _STORED = ("ok", "skip")
 _FAILED = ("fail", "rejected", "conflict")
+# What each ``status`` in upload_results.csv means; rendered into the run's summary page.
+STATUS_DEFINITIONS = {
+    "ok": "Uploaded in this run; the stored blob was read back and its size, SHA-256 and Content-MD5 match.",
+    "skip": "Already in the vault with the same size and SHA-256 from an earlier run; not uploaded again.",
+    "fail": "Not preserved after all retries, or the source file or the vault could not be read (see detail).",
+    "rejected": (
+        "Not uploaded: the file did not pass the validate gate (not validated, no SHA-256, hash or segment "
+        "mismatch, or differs from the filecopy record), or it changed after validate."
+    ),
+    "conflict": "A blob with different content already exists at this name; the immutable vault is never overwritten.",
+}
 _SUMS_NAME = "SHA256SUMS"
+_SUMMARY_NAME = "summary.md"
 _CUSTODY_NAME = "custody.json"
 _ENV_ACCOUNT = "AQUEDUCT_BLOB_ACCOUNT_URL"
 _ENV_CONTAINER = "AQUEDUCT_BLOB_CONTAINER"
@@ -497,11 +510,22 @@ def _sha256_file(path: Path) -> str:
     return hash_file_pair(path)[0]
 
 
+def _sums_text(lines: Sequence[str]) -> str:
+    return "\n".join(sorted(lines, key=lambda line: line.split("  ", 1)[1])) + "\n"
+
+
+def _data_lines(results: Sequence[UploadResult]) -> list[str]:
+    return [f"{r.sha256}  data/{r.path}" for r in results if r.status in _STORED]
+
+
+def data_digest(results: Sequence[UploadResult]) -> str:
+    """SHA-256 of the ``data/`` lines of SHA256SUMS: the fingerprint of the evidence, known before the audit files."""
+    return hashlib.sha256(_sums_text(_data_lines(results)).encode("utf-8")).hexdigest()
+
+
 def build_sha256sums(results: Sequence[UploadResult], audit_files: Sequence[Path]) -> str:
     """``sha256sum``-format lines for every preserved data file and every audit file, sorted for reproducibility."""
-    lines = [f"{r.sha256}  data/{r.path}" for r in results if r.status in _STORED]
-    lines += [f"{_sha256_file(path)}  _audit/{path.name}" for path in audit_files]
-    return "\n".join(sorted(lines, key=lambda line: line.split("  ", 1)[1])) + "\n"
+    return _sums_text([*_data_lines(results), *(f"{_sha256_file(p)}  _audit/{p.name}" for p in audit_files)])
 
 
 def audit_candidates(manifest: Path, verify_against: Path, validate_results: Path) -> list[Path]:
@@ -606,7 +630,9 @@ def _recorded(entry: UploadEntry, reason: str) -> UploadResult:
     return UploadResult(entry.path, "rejected", entry.size, entry.sha256, "", 0, 0.0, reason)
 
 
-def _summarize(results: Sequence[UploadResult], audit: Sequence[UploadResult], results_path: Path) -> int:
+def _summarize(
+    results: Sequence[UploadResult], audit: Sequence[UploadResult], results_path: Path, sums_sha256: str
+) -> int:
     c = Counter(r.status for r in results)
     log.info("-" * 60)
     log.info(
@@ -618,6 +644,7 @@ def _summarize(results: Sequence[UploadResult], audit: Sequence[UploadResult], r
         c["conflict"],
     )
     log.info("Per-file results: %s", results_path)
+    log.info("SHA256SUMS sha256: %s  (record this outside the vault)", sums_sha256)
     failed = sum(c[s] for s in _FAILED) + sum(1 for r in audit if r.status in _FAILED)
     if failed:
         log.error("RESULT: FAIL - %d file(s) were not preserved. Fix and re-run; finished files are skipped.", failed)
@@ -654,29 +681,66 @@ def open_container(config: BlobConfig) -> ContainerClient:
     return service.get_container_client(config.container)
 
 
+def _write_summary(
+    args: argparse.Namespace, run_meta: Mapping[str, Any], results: Sequence[UploadResult], cfg: BlobConfig, run_id: str
+) -> Path:
+    """The one-page outcome of the run, written before SHA256SUMS so the vault copy lists and hashes it."""
+    stages = [
+        summary.download_stage(Path(args.verify_against)),
+        summary.validate_stage(Path(args.validate_results)),
+        summary.Stage("Uploaded", dict(Counter(r.status for r in results)), _FAILED, STATUS_DEFINITIONS),
+    ]
+    page = summary.render_summary(
+        stages,
+        tool_version=run_meta["tool_version"],
+        destination=f"{cfg.container}/{cfg.prefix}",
+        run_id=run_id,
+        total_bytes=sum(r.size for r in results if r.status in _STORED),
+        data_digest=data_digest(results),
+    )
+    path = Path(args.results).with_name(_SUMMARY_NAME)
+    path.write_text(page, encoding="utf-8", newline="\n")
+    return path
+
+
 def _preserve_audit(
     ctx: Ctx, args: argparse.Namespace, run_meta: dict, results: list[UploadResult], cfg: BlobConfig
-) -> list[UploadResult]:
-    """Write SHA256SUMS + custody.json locally, then put the whole acquisition record in the vault."""
+) -> tuple[list[UploadResult], str]:
+    """Write summary.md, SHA256SUMS and custody.json locally, then put the acquisition record in the vault.
+
+    Returns the audit files' upload results and the SHA-256 of SHA256SUMS.
+    """
     results_path = Path(args.results)
+    run_id = _run_id()
     record = [
         *audit_candidates(Path(args.manifest), Path(args.verify_against), Path(args.validate_results)),
         results_path,
         results_path.with_suffix(results_path.suffix + ".metadata.json"),
         *(Path(p) for p in args.audit_file),
+        _write_summary(args, run_meta, results, cfg, run_id),
     ]
     sums_path = results_path.with_name(_SUMS_NAME)
     sums_path.write_text(build_sha256sums(results, record), encoding="utf-8", newline="\n")
-    custody = build_custody(run_meta, cfg.account_url, cfg.container, cfg.prefix, results, _sha256_file(sums_path))
+    sums_sha256 = _sha256_file(sums_path)
+    custody = build_custody(run_meta, cfg.account_url, cfg.container, cfg.prefix, results, sums_sha256)
     custody_path = results_path.with_name(_CUSTODY_NAME)
     custody_path.write_text(json.dumps(custody, indent=2), encoding="utf-8", newline="\n")
-    run_id = _run_id()
     items = [audit_item(cfg.prefix, run_id, p) for p in [*record, sums_path, custody_path]]
     log.info("Preserving the acquisition record under %s/_audit/%s/ ...", cfg.prefix, run_id)
-    return run_transfers(ctx, items, args.concurrency)
+    return run_transfers(ctx, items, args.concurrency), sums_sha256
+
+
+def _check_audit_names(extra: Sequence[str]) -> None:
+    """Fail before uploading anything if an extra audit file would collide with a file in ``_audit/<run-id>/``."""
+    taken = {_SUMMARY_NAME, _SUMS_NAME, _CUSTODY_NAME}
+    for name in (Path(p).name for p in extra):
+        if name in taken:
+            raise ConfigError(f"--audit-file name '{name}' is already used in the audit folder; rename the file")
+        taken.add(name)
 
 
 def _run(args: argparse.Namespace, cfg: BlobConfig, manifest: dict) -> int:
+    _check_audit_names(args.audit_file)
     entries, rejected = load_entries(manifest, Path(args.validate_results), load_reference(Path(args.verify_against)))
     chunk = max(int(args.chunk_mb * 1024 * 1024), 1)
     hash_sem = threading.BoundedSemaphore(max(args.hash_workers, 1))
@@ -693,8 +757,8 @@ def _run(args: argparse.Namespace, cfg: BlobConfig, manifest: dict) -> int:
             raise
     results += [_recorded(e, reason) for e, reason in rejected]
     _write_results(Path(args.results), results, run_meta, destination)
-    audit = _preserve_audit(ctx, args, run_meta, results, cfg)
-    return _summarize(results, audit, Path(args.results))
+    audit, sums_sha256 = _preserve_audit(ctx, args, run_meta, results, cfg)
+    return _summarize(results, audit, Path(args.results), sums_sha256)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
