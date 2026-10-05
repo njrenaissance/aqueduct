@@ -126,3 +126,38 @@ def test_prior_hashes_reads_current_results_schema(tmp_path: Path):
     prior = filecopy._load_prior_rows(results)
 
     assert filecopy._prior_hashes(prior) == {("a/b.pdf", 10): "ab" * 32}
+
+
+_ROW = ["a/b.pdf", "ok", "10", "1", "1.0", "ab" * 32, "1", "1073741824", "a/b.pdf.segments.json", ""]
+
+
+def test_load_prior_rows_reads_results_written_with_provenance_header(tmp_path: Path):
+    """Regression (#15): the final write of a run prepends '# ...' provenance lines; resume must still load rows."""
+    results = tmp_path / "filecopy_results.csv"
+    run_metadata = {"tool": "filecopy", "tool_version": "1.0", "operator": "op", "host_info": {"hostname": "h"}}
+    filecopy._write_results(results, {"a/b.pdf": _ROW}, run_metadata)
+    assert results.read_text(encoding="utf-8-sig").startswith("#")
+
+    prior = filecopy._load_prior_rows(results)
+
+    assert prior == {"a/b.pdf": _ROW}
+    assert filecopy._prior_hashes(prior) == {("a/b.pdf", 10): "ab" * 32}
+
+
+@pytest.mark.parametrize(
+    ("content", "warns"),
+    [
+        pytest.param(b"path,status\r\na,ok\r\n", True, id="wrong_schema"),
+        pytest.param(b"\xff\xfe\x00garbage\x80", True, id="undecodable"),
+        pytest.param(None, False, id="missing_file"),
+    ],
+)
+def test_load_prior_rows_unusable_file_returns_empty(tmp_path: Path, caplog, content, warns):
+    results = tmp_path / "filecopy_results.csv"
+    if content is not None:
+        results.write_bytes(content)
+
+    with caplog.at_level("WARNING", logger="filecopy"):
+        assert filecopy._load_prior_rows(results) == {}
+
+    assert bool(caplog.records) is warns

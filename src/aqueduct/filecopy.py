@@ -412,14 +412,17 @@ def _load_prior_rows(results_path: Path) -> dict[str, list]:
         return rows
     try:
         with open(results_path, encoding="utf-8-sig", newline="") as fh:
-            reader = csv.reader(fh)
+            # skip the "# ..." provenance lines a completed run writes above the header
+            reader = csv.reader(line for line in fh if not line.lstrip().startswith("#"))
             if next(reader, None) != _RESULT_COLUMNS:
-                return rows  # older/other schema: don't trust it
+                log.warning("Ignoring prior results %s: unrecognised schema; resume state discarded", results_path)
+                return rows
             for row in reader:
                 if row:
                     rows[row[0]] = row
-    except (OSError, csv.Error):
-        pass
+    except (OSError, csv.Error, UnicodeDecodeError) as exc:
+        log.warning("Ignoring prior results %s: unreadable (%s); resume state discarded", results_path, exc)
+        return {}
     return rows
 
 
