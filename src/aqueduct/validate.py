@@ -46,6 +46,7 @@ from aqueduct import metadata
 log = logging.getLogger("validate")
 
 _HASH_CHUNK = 4 * 1024 * 1024
+_PROGRESS_EVERY = 10  # print a progress line every N files
 _COLUMNS = [
     "path",
     "status",
@@ -251,7 +252,7 @@ def validate(
         rows: list[dict] = []
         for n, item in enumerate(files, 1):
             rows.append(_check_file(item, dest, do_hash, reference))
-            if n % 500 == 0:
+            if n % _PROGRESS_EVERY == 0:
                 print(f"  ...{n}/{len(files)} checked", flush=True)
         rows += _scan_extras(dest, manifest_paths)
 

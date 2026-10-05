@@ -303,3 +303,19 @@ def test_load_reference_wrong_schema_raises(tmp_path):
     ref_csv.write_text("foo,bar\r\n1,2\r\n", encoding="utf-8")
     with pytest.raises(ValueError, match="not a filecopy results CSV"):
         validate._load_reference(ref_csv)
+
+
+def test_validate_prints_a_progress_line_every_ten_files(tmp_path, capsys):
+    dest = tmp_path / "dl"
+    dest.mkdir()
+    items = []
+    for i in range(25):
+        (dest / f"f{i}.txt").write_bytes(b"x")
+        items.append({"path": f"f{i}.txt", "type": "file", "size": 1})
+
+    validate.validate(_manifest(items), dest, do_hash=False, results_path=tmp_path / "r.csv", reference={})
+
+    out = capsys.readouterr().out
+    assert "...10/25 checked" in out
+    assert "...20/25 checked" in out
+    assert "...25/25 checked" not in out
