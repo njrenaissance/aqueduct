@@ -1,0 +1,21 @@
+{
+  "template": "https://github.com/njrenaissance/project-templates",
+  "commit": "2127e18883619e22debcc52bebe9ee7fd6ce270d",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "project_name": "aqueduct",
+      "project_slug": "aqueduct",
+      "author": "Jonathan Phillips",
+      "python_version": "3.13",
+      "app_config": "yes",
+      "structured_logging": "no",
+      "telemetry": "no",
+      "security": "no",
+      "diagrams": "no",
+      "_template": "https://github.com/njrenaissance/project-templates",
+      "_commit": "2127e18883619e22debcc52bebe9ee7fd6ce270d"
+    }
+  },
+  "directory": "basic"
+}

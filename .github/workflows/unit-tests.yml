@@ -1,0 +1,63 @@
+name: Unit Tests
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit Tests & Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run tests with coverage
+        run: |
+          uv run pytest -m "not integration" \
+            --cov=src \
+            --cov-report=term-missing \
+            --cov-report=json:coverage.json \
+            -v
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage.json
+          retention-days: 30
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          echo "## Test Coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f coverage.json ]; then
+            uv run python -c "
+          import json
+          with open('coverage.json') as f:
+              data = json.load(f)
+          totals = data.get('totals', {})
+          pct = totals.get('percent_covered_display', 'N/A')
+          print('| Metric | Value |')
+          print('|--------|-------|')
+          print(f'| Line coverage | {pct}% |')
+          print(f'| Lines covered | {totals.get(\"covered_lines\", \"N/A\")} |')
+          print(f'| Lines missing | {totals.get(\"missing_lines\", \"N/A\")} |')
+          " >> "$GITHUB_STEP_SUMMARY"
+          fi

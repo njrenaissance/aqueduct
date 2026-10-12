@@ -1,0 +1,33 @@
+# Local quality gates, managed by the `basic` cookiecutter template.
+# Hooks call `uv run <tool>` so their versions match the pinned dev-dependency
+# versions in pyproject.toml (single source of truth) — no separate toolchain.
+default_install_hook_types: [pre-commit, pre-push]
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format (check)
+        entry: uv run ruff format --check
+        language: system
+        types: [python]
+        stages: [pre-commit]
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check
+        language: system
+        types: [python]
+        stages: [pre-commit]
+      - id: mypy
+        name: mypy src
+        entry: uv run mypy src
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: pytest
+        name: pytest
+        entry: uv run pytest
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]

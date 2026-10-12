@@ -1,0 +1,39 @@
+name: CI Pipeline
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - ".claude/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+
+  lint:
+    name: Lint & Format
+    uses: ./.github/workflows/format-lint.yml
+
+  type-check:
+    name: Type Check
+    uses: ./.github/workflows/type-check.yml
+
+  unit-tests:
+    name: Unit Tests
+    needs: [lint, type-check]
+    uses: ./.github/workflows/unit-tests.yml
+
+  # Integration runs AFTER unit passes: no point standing up Docker services if
+  # the unit gate is already red. Gated purely on unit-tests here; the workflow
+  # itself decides whether there is anything to run.
+  integration-tests:
+    name: Integration Tests
+    needs: [unit-tests]
+    uses: ./.github/workflows/integration-tests.yml
