@@ -25,6 +25,7 @@ flowchart LR
     B --> C["3 · filecopy<br/>download"]
     C --> D["4 · validate<br/>verify"]
     D --> E["5 · upload<br/>preserve in Blob vault"]
+    E --> F["6 · publish<br/>vault → SharePoint review library"]
 ```
 
 | Step | Command | Produces |
@@ -35,6 +36,7 @@ flowchart LR
 | 3. Download | `filecopy -c 8` | Every file under `download/` |
 | 4. Validate | `validate --hash` | `validate_results.csv` (pass/fail + hashes) |
 | 5. Preserve | `upload --dest-prefix <matter>/<collection>` | Evidence + audit record in the Blob vault; `upload_results.csv` |
+| 6. Publish | `publish --dest-prefix <matter>/<collection> --dest-url <folder>` | Review copy in SharePoint, streamed from the vault; `publish_results.csv` |
 
 ---
 
@@ -211,7 +213,67 @@ custody events after the upload.
 
 ---
 
-## Step 6 — (Optional) Upload to SharePoint
+## Step 6 — Publish from the vault to SharePoint
+
+Copies the preserved files **from the Blob vault straight into a SharePoint document
+library**: the review surface. Nothing is written to local disk except the results file,
+so this step runs on a small VM, and the SharePoint copy is provably the same bytes as
+the preserved evidence. The vault is only read, never written. See
+[ADR-0014](adr/0014-PUBLISH-VAULT-TO-SHAREPOINT-WITH-STORAGE-POLICY.md).
+
+One-time setup: your Azure identity needs `Storage Blob Data Reader` on the vault (signed
+in as for Step 5). For SharePoint you need the same app registration as Step 7
+(`Sites.Selected`, `~/.aqueduct/graph.json`, the secret in `AQUEDUCT_GRAPH_CLIENT_SECRET`).
+
+```bash
+uv run publish --account-url https://contoso.blob.core.windows.net --container vault \
+    --dest-prefix 2026-0042-smith/20261004-share-a \
+    --dest-url "https://contoso.sharepoint.com/sites/Review/Shared%20Documents/Case%2012"
+```
+
+(The vault flags fall back to `AQUEDUCT_BLOB_*` as in Step 5. For the destination, use
+either `--dest-url` or `--site-url` + `--library` [+ `--target-folder`], as in Step 7.)
+
+**Storage policy: not everything is published.** SharePoint storage is limited, so before
+any bytes are read each file is screened **by name and size only** (its content is never
+inspected) and set aside when it is:
+
+- larger than `--max-bytes` (default **1 GiB**, a placeholder still to be confirmed;
+  `--max-bytes 0` removes the limit), or over SharePoint's own 250 GB limit;
+- audio or video (`.mp4 .m4v .mov .avi .mkv .wmv .flv .webm .mpg .mpeg .mp3 .wav .m4a
+  .aac .flac .ogg .opus .wma .aiff`). This rule is on by default; publish them anyway
+  with `--include-av`;
+- in your own `--skip-ext` list (e.g. `--skip-ext .iso,.exe`).
+
+A set-aside file stays in the vault untouched. It gets a `skipped` row in
+`publish_results.csv` with its reason (`over size limit`, `audiovisual` or `excluded
+extension`), its size and its SHA-256, and it is counted in the run summary. `skipped` is
+**not** a failure. **The review library is therefore intentionally incomplete:** tell
+reviewers that audio/video and very large files are in the vault only.
+
+What it does:
+
+- Small files go up in one request. Large files go through a resumable upload session,
+  read from the vault range by range. An interrupted transfer resumes where SharePoint
+  stopped, re-reading only the part still needed.
+- Computes the SHA-256 and SharePoint's `quickXorHash` while the bytes stream. A file is
+  `ok` only when the streamed SHA-256 equals the SHA-256 that `upload` recorded on the
+  blob **and** SharePoint reports the same size and `quickXorHash`. A file SharePoint
+  reports no hash for is `size-only`: re-check those. Any mismatch is `fail`. The hash
+  can only be checked after sending, so a failed item may be left on SharePoint; add
+  `--delete-mismatched` to remove it.
+- Safe to re-run: items already on SharePoint with a matching size and hash are skipped.
+  A mismatching one is replaced. The policy is applied first, so a file excluded by a
+  stricter policy is not uploaded on a re-run.
+- Writes `publish_results.csv` and a `.metadata.json` sidecar that records the vault
+  source and the policy used. A `fail` row makes the run exit non-zero.
+
+---
+
+## Step 7 — (Optional) Upload the local download to SharePoint
+
+> If the files are already preserved in the vault, use **Step 6** instead: it builds the
+> review copy from the vault and needs no local download.
 
 > **This bypasses the Azure Blob vault.** The SharePoint copy is a convenience/review
 > copy, **not evidence** — the command warns, and records the bypass in its results.
@@ -263,7 +325,9 @@ From the case data folder:
   that it matches the record.
 - `upload_results.csv` — what was preserved in the Blob vault, with the hash of each file.
   The vault's `_audit/<run-id>/` folder holds a copy of this whole record.
-- `spupload_results.csv` — only if you used Step 6; it records a **non-evidentiary**
+- `publish_results.csv` — what was published from the vault to the SharePoint review
+  library, and which files were set aside by the storage policy (vault only).
+- `spupload_results.csv` — only if you used Step 7; it records a **non-evidentiary**
   review copy, not preservation.
 
 ## Troubleshooting

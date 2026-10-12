@@ -250,6 +250,12 @@ class GraphClient:
             raise UploadError(f"Upload session for '{name}' returned no uploadUrl")
         return str(upload_url)
 
+    async def delete_child(self, parent: FolderRef, name: str) -> None:
+        """Delete child ``name`` under ``parent``; an item that is already gone counts as deleted."""
+        resp = await self._send("DELETE", self._child_lookup_url(parent, name))
+        if resp.status_code not in (HTTPStatus.NO_CONTENT, HTTPStatus.NOT_FOUND):
+            raise UploadError(f"Could not delete '{name}': {resp.status_code} {resp.text[:200]}")
+
     async def ensure_child_folder(self, parent: FolderRef, name: str) -> FolderRef:
         """Return the child folder ``name`` under ``parent``, creating it if absent."""
         return await self._ensure_folder(parent.drive_id, parent.item_id, name)
