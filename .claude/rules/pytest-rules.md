@@ -18,11 +18,14 @@ paths:
   def test_capitalize_all_lower_case():
       assert capitalize("abc") == "ABC"
 
+
   def test_capitalize_camel_case():
       assert capitalize("aBC") == "ABC"
 
+
   def test_capitalize_empty_string():
       assert capitalize("") == ""
+
 
   # Prefer
   @pytest.mark.parametrize(
