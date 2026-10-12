@@ -17,6 +17,7 @@
 
       somesetting: str
 
+
   class Settings(BaseSettings):
       model_config = SettingsConfigDict(env_prefix="MYAPP_", env_file=".env")
 
