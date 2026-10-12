@@ -92,6 +92,12 @@ class FakeContainer:
             md5=bytearray(_md5(payload)),
         )
 
+    def seed_unrecorded(self, name: str, payload: bytes, *, md5: bytes | None) -> None:
+        """A blob some other tool put there: no ``sha256`` metadata, and ``md5`` as its Content-MD5 (or none)."""
+        self.blobs[name] = SimpleNamespace(
+            data=payload, size=len(payload), metadata={}, md5=None if md5 is None else bytearray(md5)
+        )
+
 
 def _ctx(container: FakeContainer, retries: int = 1, chunk: int = _CHUNK) -> bu.Ctx:
     return bu.Ctx(container=container, prefix=_PREFIX, chunk=chunk, max_retries=retries)
@@ -722,6 +728,94 @@ def test_existing_matching_blob_is_skipped_after_one_hash(tmp_path: Path, mocker
 
     assert result.status == "skip"
     spy.assert_called_once()
+
+
+# --- blobs written by another tool: no SHA-256 metadata (md5-only) ---------------------
+
+
+def test_existing_blob_without_sha256_metadata_but_matching_content_md5_is_md5_only(tmp_path: Path) -> None:
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+    container.seed_unrecorded(f"{_PREFIX}/data/a.pdf", b"hello", md5=_md5(b"hello"))
+
+    result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "md5-only"
+    assert result.sha256 == _sha(b"hello")
+    assert "Content-MD5" in result.detail
+    assert container.staged_calls == []
+    assert container.commits == []
+    assert container.blobs[f"{_PREFIX}/data/a.pdf"].metadata == {}
+
+
+@pytest.mark.parametrize(
+    ("stored_md5", "fragment"),
+    [
+        pytest.param(_md5(b"OTHER"), "Content-MD5", id="content_md5_differs"),
+        pytest.param(None, "no SHA-256 or Content-MD5", id="no_content_md5_to_compare"),
+    ],
+)
+def test_existing_blob_without_sha256_metadata_that_cannot_be_matched_is_a_conflict(
+    tmp_path: Path, stored_md5: bytes | None, fragment: str
+) -> None:
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+    container.seed_unrecorded(f"{_PREFIX}/data/a.pdf", b"OTHER", md5=stored_md5)
+
+    result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "conflict"
+    assert fragment in result.detail
+    assert container.commits == []
+
+
+def test_a_recorded_sha256_that_differs_is_a_conflict_even_when_the_content_md5_matches(tmp_path: Path) -> None:
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"hello")
+    container.seed(f"{_PREFIX}/data/a.pdf", b"hello", sha256="f" * 64)
+
+    assert bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path)).status == "conflict"
+
+
+def test_md5_only_blob_for_a_file_changed_since_validate_is_rejected(tmp_path: Path) -> None:
+    container = FakeContainer()
+    entry = _entry("a.pdf", b"hello")
+    _source(tmp_path, entry, b"HELLO")  # same size, changed since validate
+    container.seed_unrecorded(f"{_PREFIX}/data/a.pdf", b"HELLO", md5=_md5(b"HELLO"))
+
+    result = bu.transfer(_ctx(container), bu.data_item(_PREFIX, entry, tmp_path))
+
+    assert result.status == "rejected"
+
+
+def test_main_md5_only_blob_passes_with_a_warning_and_is_counted_separately(workspace, caplog) -> None:
+    workspace.container.seed_unrecorded(f"{_PREFIX}/data/a.pdf", b"hello", md5=_md5(b"hello"))
+    _write_filecopy_results(workspace.root / "filecopy_results.csv", [("a.pdf", "ok")])
+
+    with caplog.at_level(logging.INFO, logger="upload"):
+        code = bu.main(workspace.argv)
+
+    assert code == 0
+    assert "md5-only=1" in caplog.text
+    assert "not SHA-256-verified" in caplog.text
+    assert "RESULT: PASS" in caplog.text
+    rows = list(
+        csv.DictReader(
+            line
+            for line in (workspace.root / "upload_results.csv").read_text("utf-8-sig").splitlines()
+            if not line.startswith("#")
+        )
+    )
+    assert [(r["path"], r["status"]) for r in rows] == [("a.pdf", "md5-only")]
+    page = (workspace.root / "summary.md").read_text(encoding="utf-8")
+    assert "**Overall: PASS**" in page
+    assert "`md5-only`: 1" in page
+    assert "`md5-only`:" in page.split("## Definitions")[1]
+    sums = (workspace.root / "SHA256SUMS").read_text(encoding="utf-8")
+    assert f"{_sha(b'hello')}  data/a.pdf" in sums
 
 
 # --- parallel block staging ----------------------------------------------------------
