@@ -17,7 +17,9 @@ What it does:
     * A file is "completed" only when the stored blob is read back and its size, SHA-256 metadata and
       Content-MD5 match - never merely because bytes arrived.
     * Idempotent: a blob already there with the same size and SHA-256 is skipped. A blob already there with a
-      *different* hash is a ``conflict`` and is never overwritten (the container is immutable).
+      *different* hash is a ``conflict`` and is never overwritten (the container is immutable). A blob put there by
+      another tool has no SHA-256 to compare; if its Content-MD5 and size match the file it is ``md5-only`` - kept,
+      but only transport-checked, never reported as a plain ``ok`` or ``skip``.
     * Then it preserves the acquisition record beside the evidence, under ``<prefix>/_audit/<run-id>/``: the
       manifest, filecopy/validate/upload results, a one-page ``summary.md``, a portable ``SHA256SUMS`` and a
       ``custody.json`` binding it.
@@ -72,12 +74,17 @@ _FLUSH_EVERY = 100  # checkpoint the results CSV every N finished files, and...
 _FLUSH_SECONDS = 30  # ...at least this often
 _PROGRESS_SECONDS = 30  # log a progress line this often while transfers run
 _LARGE_BYTES = 256 * 1024 * 1024  # announce files at least this big when they start
-_STORED = ("ok", "skip")
+_STORED = ("ok", "skip", "md5-only")
+_WEAKLY_VERIFIED = ("md5-only",)  # preserved, but not SHA-256-verified in the vault
 _FAILED = ("fail", "rejected", "conflict")
 # What each ``status`` in upload_results.csv means; rendered into the run's summary page.
 STATUS_DEFINITIONS = {
     "ok": "Uploaded in this run; the stored blob was read back and its size, SHA-256 and Content-MD5 match.",
     "skip": "Already in the vault with the same size and SHA-256 from an earlier run; not uploaded again.",
+    "md5-only": (
+        "In the vault already (not uploaded by this tool, so no SHA-256 is recorded on the blob); the size and "
+        "Content-MD5 match the file. MD5 is Azure's transport check, so this is weaker than `skip`: re-check these."
+    ),
     "fail": "Not preserved after all retries, or the source file or the vault could not be read (see detail).",
     "rejected": (
         "Not uploaded: the file did not pass the validate gate (not validated, no SHA-256, hash or segment "
@@ -160,7 +167,7 @@ class Item:
 @dataclass
 class UploadResult:
     path: str
-    status: str  # ok | skip | fail | rejected | conflict
+    status: str  # ok | skip | md5-only | fail | rejected | conflict
     size: int
     sha256: str
     blob_name: str
@@ -392,28 +399,59 @@ def _try_upload(ctx: Ctx, item: Item, size: int) -> UploadResult:
     return _result(item, "fail", size, sha256, attempts, 0.0, "logic error")  # unreachable
 
 
+def _recorded_evidence(existing: Any, sha256: str, md5: bytes) -> str:
+    """How an existing blob shows it is this file: ``sha256`` (recorded by us), ``md5`` (none recorded), or ``""``.
+
+    A recorded SHA-256 is authoritative: when there is one, Content-MD5 is not consulted.
+    """
+    recorded = (existing.metadata or {}).get("sha256")
+    if recorded:
+        return "sha256" if recorded == sha256 else ""
+    stored_md5 = existing.content_settings.content_md5
+    return "md5" if stored_md5 is not None and bytes(stored_md5) == md5 else ""
+
+
+def _unmatched_existing(ctx_item: Item, size: int, sha256: str, existing: Any) -> UploadResult:
+    """A same-size blob that is not this file (or cannot be shown to be): a conflict, never overwritten."""
+    item = ctx_item
+    recorded = (existing.metadata or {}).get("sha256")
+    if recorded or existing.content_settings.content_md5 is not None:
+        detail = (
+            "a blob with a different hash already exists" if recorded else "the existing blob's Content-MD5 differs"
+        )
+    else:
+        detail = "the existing blob has no SHA-256 or Content-MD5 to compare"
+    log.error("CONFLICT  %s - %s; the vault is not overwritten", item.path, detail)
+    return _result(item, "conflict", size, sha256, 0, 0.0, detail)
+
+
 def _compare_existing(ctx: Ctx, item: Item, size: int, existing: Any) -> UploadResult:
     """A blob is already at this name: skip if it is the same file, otherwise refuse to overwrite it.
 
-    Only a same-size blob is worth reading the local file for; a different size is a conflict on its own.
+    Only a same-size blob is worth reading the local file for; a different size is a conflict on its own. A blob
+    with no recorded SHA-256 (put there by another tool) is accepted on a matching Content-MD5 as ``md5-only``.
     """
     if existing.size != size:
         log.error("CONFLICT  %s - a different blob already exists here; the vault is not overwritten", item.path)
         return _result(item, "conflict", size, item.expected_sha256, 0, 0.0, "a blob with a different size exists")
     try:
         with ctx.hash_sem:
-            sha256, _ = hash_file_pair(item.source)
+            sha256, md5 = hash_file_pair(item.source)
     except OSError as exc:
         log.error("FAIL  %s - could not read the source file: %s", item.path, exc)
         return _result(item, "fail", size, item.expected_sha256, 0, 0.0, f"could not read the source file: {exc}")
     if item.expected_sha256 and sha256 != item.expected_sha256:
         log.error("REJECT  %s - changed since validate (SHA-256 differs from the validated value)", item.path)
         return _result(item, "rejected", size, sha256, 0, 0.0, "changed since validate (SHA-256 mismatch)")
-    if (existing.metadata or {}).get("sha256") == sha256:
+    evidence = _recorded_evidence(existing, sha256, md5)
+    if evidence == "sha256":
         log.info("skip  %s (already preserved, hash matches)", item.path)
         return _result(item, "skip", size, sha256, 0, 0.0)
-    log.error("CONFLICT  %s - a different blob already exists at this name; the vault is not overwritten", item.path)
-    return _result(item, "conflict", size, sha256, 0, 0.0, "a blob with a different hash already exists")
+    if evidence == "md5":
+        log.warning("md5-only  %s (in the vault without a SHA-256; size and Content-MD5 match)", item.path)
+        detail = "no SHA-256 recorded on the blob; matched on size and Content-MD5 (transport check only)"
+        return _result(item, "md5-only", size, sha256, 0, 0.0, detail)
+    return _unmatched_existing(item, size, sha256, existing)
 
 
 def _lookup_with_retries(ctx: Ctx, item: Item) -> Any | None:
@@ -636,20 +674,31 @@ def _summarize(
     c = Counter(r.status for r in results)
     log.info("-" * 60)
     log.info(
-        "DONE  ok=%d  skip=%d  fail=%d  rejected=%d  conflict=%d",
+        "DONE  ok=%d  skip=%d  md5-only=%d  fail=%d  rejected=%d  conflict=%d",
         c["ok"],
         c["skip"],
+        c["md5-only"],
         c["fail"],
         c["rejected"],
         c["conflict"],
     )
     log.info("Per-file results: %s", results_path)
     log.info("SHA256SUMS sha256: %s  (record this outside the vault)", sums_sha256)
+    weak = sum(c[s] for s in _WEAKLY_VERIFIED)
+    if weak:
+        log.warning(
+            "%d file(s) are in the vault but not SHA-256-verified there (md5-only: no SHA-256 on the blob, matched on"
+            " Content-MD5). They cannot be amended in an immutable container; re-check them later.",
+            weak,
+        )
     failed = sum(c[s] for s in _FAILED) + sum(1 for r in audit if r.status in _FAILED)
     if failed:
         log.error("RESULT: FAIL - %d file(s) were not preserved. Fix and re-run; finished files are skipped.", failed)
         return 1
-    log.info("RESULT: PASS - every validated file is preserved and verified; the audit record is stored beside it.")
+    caveat = f" ({weak} only by Content-MD5, see the warning above)" if weak else ""
+    log.info(
+        "RESULT: PASS - every validated file is preserved and verified%s; the audit record is stored beside it.", caveat
+    )
     return 0
 
 
@@ -688,7 +737,9 @@ def _write_summary(
     stages = [
         summary.download_stage(Path(args.verify_against)),
         summary.validate_stage(Path(args.validate_results)),
-        summary.Stage("Uploaded", dict(Counter(r.status for r in results)), _FAILED, STATUS_DEFINITIONS),
+        summary.Stage(
+            "Uploaded", dict(Counter(r.status for r in results)), _FAILED, STATUS_DEFINITIONS, _WEAKLY_VERIFIED
+        ),
     ]
     page = summary.render_summary(
         stages,

@@ -79,5 +79,13 @@ with the evidence for now.
   hashed while its blocks are staged and compared to the validated SHA-256 before `commit_block_list`; on a mismatch
   nothing is committed (Azure discards uncommitted blocks) and the row is `rejected`. Same guarantee as re-hashing
   first, one read instead of two.
+- **Blobs without a recorded SHA-256 (`md5-only`).** A blob already at the name that this tool did not write (for
+  example, files copied up by hand before `upload` existed) carries no `sha256` metadata, and metadata cannot be
+  added under an immutability policy. Reporting it as a `conflict` was a false alarm: the content was identical.
+  When no SHA-256 is recorded, the blob's Content-MD5 and size are compared with the local file (already validated
+  against its SHA-256); a match is `md5-only`. It counts as preserved (it is listed in `SHA256SUMS` and the bytes
+  total) and does not fail the run, but it is reported separately and warned about, never as `ok` or `skip`, because
+  MD5 is only Azure's transport check. A recorded SHA-256 that differs is still a `conflict` whatever the MD5 says,
+  and a blob with no SHA-256 and no Content-MD5 to compare is a `conflict`.
 - Adds the Azure SDK to a tool that had only `httpx` and Playwright, and a one-time Azure setup (container with a
   retention policy or legal hold, a write role for the uploader) that this ADR does not automate.

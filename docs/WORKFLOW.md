@@ -183,6 +183,12 @@ What it does:
   and Content-MD5 match. Anything else is a `fail`.
 - Safe to re-run: files already preserved with the same hash are skipped. A blob that
   already exists with a **different** hash is a `conflict` and is never overwritten.
+- A blob already in the vault that this tool did not upload (for example, files copied
+  up by hand earlier) has no SHA-256 recorded, and an immutable container cannot be
+  amended to add one. If its size and Content-MD5 match the local file it is recorded as
+  `md5-only`: kept, counted separately in the run and in `summary.md`, and still a
+  pass, but only transport-checked, not SHA-256-verified. A mismatch, or a blob with
+  nothing to compare, is a `conflict`. Re-check `md5-only` files later.
 - Finally stores the **acquisition record** beside the evidence in
   `_audit/<run-id>/`: `manifest.json`/`.csv`, `filecopy_results.csv`,
   `validate_results.csv`, `upload_results.csv` (each with its `.metadata.json`

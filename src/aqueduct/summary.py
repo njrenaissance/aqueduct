@@ -27,6 +27,7 @@ class Stage:
     counts: Mapping[str, int] | None
     failed: Sequence[str]
     definitions: Mapping[str, str]
+    caution: Sequence[str] = ()  # statuses that pass but are only weakly verified; called out beside the table
 
     @property
     def ran(self) -> bool:
@@ -75,6 +76,17 @@ def _stats_table(stages: Sequence[Stage]) -> list[str]:
         total = str(stage.total) if stage.ran else NOT_RUN
         lines.append(f"| {stage.title} | {total} | {ok} | {failed} | {_breakdown(stage)} |")
     return lines
+
+
+def _caution_notes(stages: Sequence[Stage]) -> list[str]:
+    """Files that count as passed but were not fully verified, so a reader does not take them for a plain OK."""
+    lines = [
+        f"- {stage.title}: `{status}`: {count} file(s) accepted on weaker evidence - see Definitions."
+        for stage in stages
+        for status in stage.caution
+        if (count := (stage.counts or {}).get(status, 0))
+    ]
+    return [*lines, ""] if lines else []
 
 
 def _definitions(stages: Sequence[Stage]) -> list[str]:
@@ -128,6 +140,7 @@ def render_summary(
         "",
         *_stats_table(stages),
         "",
+        *_caution_notes(stages),
         *_definitions(stages),
     ]
     return "\n".join(lines).rstrip() + "\n"

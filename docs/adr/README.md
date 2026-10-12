@@ -18,6 +18,7 @@ they were made. Each is self-contained; read them in order for the full picture.
 | [ADR-0011](0011-LOGICAL-ACQUISITION-OF-A-REMOTE-SOURCE.md) | Logical acquisition of a remote source (physical is impossible); describe the method, don't claim the "forensic" label |
 | [ADR-0012](0012-DIRECT-GRAPH-UPLOAD-TO-SHAREPOINT.md) | Direct upload of a validated download to SharePoint via Graph — a convenience/review copy, not evidence |
 | [ADR-0013](0013-UPLOAD-TO-IMMUTABLE-BLOB.md) | Upload the validated download to the immutable Azure Blob vault (Stage 2), with the audit record stored beside it |
+| [ADR-0014](0014-PUBLISH-VAULT-TO-SHAREPOINT-WITH-STORAGE-POLICY.md) | Publish the vault to SharePoint by streaming, skipping oversized and audio/video files (proposed) |
 
 ADR-0001–0006, 0010 and 0013 describe the shipped tool; ADR-0007–0009 are
 forward-looking decisions that govern the [pipeline SPEC](../SPEC.md) and are not yet
