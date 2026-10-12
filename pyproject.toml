@@ -58,6 +58,9 @@ show_missing = true
 line-length = 120
 target-version = "py313"
 exclude = ["basic/"]
+# Ruff's formatter also formats Markdown; limit that to src/ so docs, rules and
+# standards outside it are not checked. Python and pyproject.toml are unchanged.
+include = ["**/*.py", "**/*.pyi", "**/*.ipynb", "pyproject.toml", "src/**/*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "N", "ARG", "SIM", "ERA", "PLR", "C901"]
