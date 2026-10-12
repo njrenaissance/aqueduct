@@ -189,6 +189,21 @@ Sync hygiene:
 - Reviewer permissions are **read-only**; a retention label marks the library a
   record. The Blob remains the immutable authority regardless.
 
+**Searchable copies today: `publish` ([ADR-0014](adr/0014-PUBLISH-VAULT-TO-SHAREPOINT-WITH-STORAGE-POLICY.md)).**
+`publish` builds the searchable-copy half of this stage. It lists `<prefix>/data/` in the
+vault read-only and streams each blob straight into the review library through Graph
+(simple PUT or a resumable upload session fed by ranged blob reads), with no local copy.
+It hashes while streaming: a file is `ok` only when the streamed SHA-256 equals the blob's
+recorded `sha256` **and** SharePoint reports the same size and `quickXorHash`. A missing
+server hash is `size-only`, and any mismatch is `fail`. A **storage policy** stands in for
+the router's type + size rule. Before any byte is read, files over `--max-bytes` (1 GiB
+placeholder) or SharePoint's 250 GB limit, audio/video files (unless `--include-av`), and
+`--skip-ext` extensions are set aside. Each gets a `skipped` row in `publish_results.csv`
+and stays in the vault only. Re-runs skip items already present with a matching size and
+`quickXorHash`. Stubs for the set-aside files, the ledger "completed" marking, and
+classification-driven routing are **not built yet**, so until then the review library is
+intentionally incomplete, and `publish_results.csv` is the record of what was left out.
+
 **Direct-upload shortcut (`spupload`, [ADR-0012](adr/0012-DIRECT-GRAPH-UPLOAD-TO-SHAREPOINT.md)).**
 An operator with Graph access to their own destination site can upload the validated
 local download straight to a SharePoint library, **bypassing the vault**. This is a
@@ -264,8 +279,11 @@ on a server.
   acquisition record (`manifest`, results CSVs, `summary.md`, `SHA256SUMS`, `custody.json`) under
   `_audit/` beside the evidence ([ADR-0013](adr/0013-UPLOAD-TO-IMMUTABLE-BLOB.md)).
   Streaming without a local copy (§10, ADR-0008) is not built yet.
-- **Stages 3–4 are new components** to build against this spec: classifier/router and
-  SharePoint sync, plus the ledger database that ties them together.
+- **Stage 4 is partly built** as `publish`: it streams the vault's files into the SharePoint
+  review library with a size/extension storage policy (see §7 and ADR-0014). Stubs for
+  set-aside files and ledger records are not built yet.
+- **Stage 3 and the rest of Stage 4 are new components** to build against this spec:
+  classifier/router, metadata stubs, plus the ledger database that ties them together.
 
 ## 12. Open questions
 
