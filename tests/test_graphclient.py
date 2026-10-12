@@ -279,6 +279,30 @@ def test_create_upload_session_without_url_raises() -> None:
         asyncio.run(graph.create_upload_session(_DEST, "big.bin"))
 
 
+# --- deletes ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", [pytest.param(204, id="deleted"), pytest.param(404, id="already_gone")])
+def test_delete_child_deletes_the_named_child(status: int) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(status)
+
+    graph, _ = _graph(handler)
+    asyncio.run(graph.delete_child(_DEST, "Exhibit 1.pdf"))
+
+    assert [r.method for r in seen] == ["DELETE"]
+    assert str(seen[0].url) == f"{_BASE}/drives/drive-1/items/dest-item:/Exhibit%201.pdf:"
+
+
+def test_delete_child_rejection_raises() -> None:
+    graph, _ = _graph(lambda _r: httpx.Response(403, text="denied"))
+    with pytest.raises(UploadError, match="403"):
+        asyncio.run(graph.delete_child(_DEST, "f.pdf"))
+
+
 # --- folders ------------------------------------------------------------------
 
 
