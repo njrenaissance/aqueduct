@@ -386,12 +386,8 @@ async def run(
 # --- command line --------------------------------------------------------------
 
 
-def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="Upload the validated download to a SharePoint document library (Graph).")
-    ap.add_argument("-m", "--manifest", default="manifest.json")
-    ap.add_argument("-d", "--source", default="download", help="local download folder (default download)")
-    ap.add_argument("--validate-results", default="validate_results.csv", help="output of `validate --hash`")
-    ap.add_argument("--results", default="spupload_results.csv", help="per-file results CSV")
+def add_destination_arguments(ap: argparse.ArgumentParser) -> None:
+    """The SharePoint destination flags (shared with ``publish``) and the Graph app-registration config."""
     ap.add_argument("--dest-url", default="", help="SharePoint folder URL: <site>/<library>[/<folder>]")
     ap.add_argument("--site-url", default="", help="SharePoint site URL (with --library)")
     ap.add_argument("--library", default="", help="document library name (with --site-url)")
@@ -399,6 +395,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     ap.add_argument(
         "--config", default=str(GRAPH_CONFIG_PATH), help="app registration JSON (default ~/.aqueduct/graph.json)"
     )
+
+
+def check_destination(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Exactly one destination form: ``--dest-url``, or ``--site-url`` with ``--library``."""
+    site_form = bool(args.site_url or args.library or args.target_folder)
+    if args.dest_url and site_form:
+        ap.error("give either --dest-url or --site-url/--library/--target-folder, not both")
+    if not args.dest_url and not (args.site_url and args.library):
+        ap.error("a destination is required: --dest-url, or --site-url together with --library")
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="Upload the validated download to a SharePoint document library (Graph).")
+    ap.add_argument("-m", "--manifest", default="manifest.json")
+    ap.add_argument("-d", "--source", default="download", help="local download folder (default download)")
+    ap.add_argument("--validate-results", default="validate_results.csv", help="output of `validate --hash`")
+    ap.add_argument("--results", default="spupload_results.csv", help="per-file results CSV")
+    add_destination_arguments(ap)
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--retries", type=int, default=2)
     ap.add_argument("--chunk-mb", type=float, default=4.0)
@@ -407,11 +421,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--blocked-ext", default="", help="comma-separated extensions to skip (e.g. .exe,.dll)")
     ap.add_argument("--operator", default=None, help="operator identity for the record (opt-in; default unspecified)")
     args = ap.parse_args(argv)
-    site_form = bool(args.site_url or args.library or args.target_folder)
-    if args.dest_url and site_form:
-        ap.error("give either --dest-url or --site-url/--library/--target-folder, not both")
-    if not args.dest_url and not (args.site_url and args.library):
-        ap.error("a destination is required: --dest-url, or --site-url together with --library")
+    check_destination(ap, args)
     return args
 
 

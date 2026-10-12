@@ -319,6 +319,46 @@ def test_resume_interrupted_large_file_rereads_only_needed_range(mocker) -> None
     ]
 
 
+class ExpiringSession(FakeSession):
+    """A session whose first chunk PUT finds it expired (404); a fresh session then accepts everything."""
+
+    async def put(self, url: str, content: bytes, headers: dict) -> httpx.Response:
+        if url.endswith("/expired"):
+            self.put_calls += 1
+            return httpx.Response(404, json={}, request=_req())
+        return await super().put(url, content, headers)
+
+
+def test_expired_upload_session_is_reopened_and_hashes_stay_correct(mocker) -> None:
+    payload = bytes((i * 13 + 1) % 256 for i in range(_ALIGN + 50))
+    vault = FakeVault()
+    vault.add("big.bin", payload)
+    graph = _graph(mocker, None, _meta(len(payload), _qxh(payload)))
+    graph.create_upload_session = mocker.AsyncMock(
+        side_effect=["https://upload.test/expired", "https://upload.test/new"]
+    )
+    session = ExpiringSession()
+
+    result = asyncio.run(pub.publish_one(_ctx(vault, graph, session=session), _vault_blob(vault, "big.bin"), _DEST))
+
+    assert result.status == "ok"
+    assert result.sha256 == _sha(payload)
+    assert session.received == payload
+    assert graph.create_upload_session.await_count == 2
+
+
+def test_empty_blob_is_published_in_one_put_without_a_ranged_read(mocker) -> None:
+    vault = FakeVault()
+    vault.add("empty.txt", b"")
+    graph = _graph(mocker, None, _meta(0, _qxh(b"")))
+
+    result = asyncio.run(pub.publish_one(_ctx(vault, graph), _vault_blob(vault, "empty.txt"), _DEST))
+
+    assert result.status == "ok"
+    graph.upload_small.assert_awaited_once_with(_DEST, "empty.txt", b"")
+    assert vault.reads == []
+
+
 # --- verification ------------------------------------------------------------------
 
 
@@ -445,6 +485,18 @@ def test_existing_item_with_different_hash_is_replaced(mocker) -> None:
 
     assert result.status == "ok"
     graph.upload_small.assert_awaited_once()
+
+
+def test_rerun_check_fails_a_vault_blob_that_no_longer_matches_its_recorded_sha256(mocker) -> None:
+    vault = FakeVault()
+    vault.add("a.pdf", _PAYLOAD, sha256=_sha(b"what was preserved"))
+    graph = _graph(mocker, _meta(len(_PAYLOAD), _qxh(_PAYLOAD)))
+
+    result = asyncio.run(pub.publish_one(_ctx(vault, graph), _vault_blob(vault, "a.pdf"), _DEST))
+
+    assert result.status == "fail"
+    assert "SHA-256" in result.detail
+    graph.upload_small.assert_not_awaited()
 
 
 # --- run: folders, results CSV and sidecar, exit code -------------------------------

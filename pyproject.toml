@@ -22,6 +22,7 @@ filecopy = "aqueduct.filecopy:main"
 validate = "aqueduct.validate:main"
 spupload = "aqueduct.spupload:main"
 upload = "aqueduct.blobupload:main"
+publish = "aqueduct.publish:main"
 
 [build-system]
 requires = ["hatchling"]
