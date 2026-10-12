@@ -684,3 +684,46 @@ def test_main_leaves_only_results_csv_and_sidecar_on_disk(end_to_end, caplog, ca
 def test_main_without_a_vault_destination_exits_2(end_to_end) -> None:
     argv = ["--dest-url", _DEST_URL]
     assert pub.main(argv) == 2
+
+
+class FailingSession(FakeSession):
+    """Every chunk PUT is rejected with a server error."""
+
+    async def put(self, url: str, content: bytes, headers: dict) -> httpx.Response:
+        self.put_calls += 1
+        return httpx.Response(503, json={}, request=httpx.Request("PUT", url))
+
+
+def test_session_failure_never_records_or_logs_the_pre_authenticated_upload_url(tmp_path: Path, mocker, caplog) -> None:
+    secret_url = "https://upload.test/session?tempauth=not-a-real-token"
+    payload = b"q" * (_ALIGN + 1)
+    vault = FakeVault()
+    vault.add("big.bin", payload)
+    graph = _graph(mocker, None)
+    graph.create_upload_session = mocker.AsyncMock(return_value=secret_url)
+    results = tmp_path / "r.csv"
+    caplog.set_level(logging.DEBUG)
+
+    code = asyncio.run(
+        pub.run(
+            _ctx(vault, graph, session=FailingSession(), retries=1),
+            [_vault_blob(vault, "big.bin")],
+            [],
+            _BASE,
+            results,
+            _SOURCE,
+            _POLICY,
+        )
+    )
+
+    assert code == 1
+    _, rows = _read_results(results)
+    assert rows[0]["status"] == "fail"
+    assert "503" in rows[0]["detail"]
+    assert "tempauth" not in results.read_text(encoding="utf-8-sig") + caplog.text
+
+
+def test_main_network_failure_resolving_the_destination_exits_2(end_to_end, mocker) -> None:
+    end_to_end.graph.resolve_destination_url = mocker.AsyncMock(side_effect=httpx.ConnectError("dns failure"))
+
+    assert pub.main(end_to_end.argv) == 2

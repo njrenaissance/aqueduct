@@ -310,13 +310,15 @@ async def _transfer(ctx: Ctx, blob: VaultBlob, dest: FolderRef) -> PublishResult
         try:
             meta = await _send(ctx, blob, dest, stream)
         except _RETRYABLE as exc:
+            # An HTTPStatusError's text carries the pre-authenticated upload-session URL: never log or record it.
+            reason = f"HTTP {exc.response.status_code}" if isinstance(exc, httpx.HTTPStatusError) else str(exc)
             if attempt >= attempts:
-                log.error("FAIL  %s - %s (after %d tries)", blob.entry.path, exc, attempt)
-                return _row(blob, "fail", "", attempt, time.monotonic() - started, str(exc))
+                log.error("FAIL  %s - %s (after %d tries)", blob.entry.path, reason, attempt)
+                return _row(blob, "fail", "", attempt, time.monotonic() - started, reason)
             if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == HTTPStatus.NOT_FOUND:
                 stream.session_url = ""  # the session expired: open a new one
             backoff = backoff_seconds(exc, attempt)
-            log.warning("retry %s - %s (try %d/%d; %ds)", blob.entry.path, exc, attempt, attempts, backoff)
+            log.warning("retry %s - %s (try %d/%d; %ds)", blob.entry.path, reason, attempt, attempts, backoff)
             await asyncio.sleep(backoff)
         else:
             return await _verified(ctx, blob, dest, stream, meta, attempt, time.monotonic() - started)
@@ -502,7 +504,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         policy = {"max_bytes": args.max_bytes, "include_av": args.include_av, "skip_ext": skip_ext}
         source = f"{cfg.account_url}/{cfg.container}/{cfg.prefix}/data"
         return asyncio.run(_run_async(args, container, publishable, skipped, source, policy))
-    except (AqueductError, AzureError) as exc:
+    except (AqueductError, AzureError, httpx.HTTPError) as exc:
         log.error("%s", exc)
         return 2
 
